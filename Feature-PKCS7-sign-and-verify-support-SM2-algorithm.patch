@@ -1,0 +1,74 @@
+From fa3d5b8af929c296f4d684345dedf1e2b4b390e2 Mon Sep 17 00:00:00 2001
+From: gaoyusong <gaoyusong2@huawei.com>
+Date: Fri, 30 Sep 2022 12:10:15 +0800
+Subject: [PATCH] PKCS7 sign and verify support SM2 algorithm
+
+Signed-off-by: Huaxin Lu <luhuaxin1@huawei.com>
+---
+ crypto/pkcs7/pk7_doit.c | 23 +++++++++++++++++++++--
+ crypto/sm2/sm2_pmeth.c  |  1 +
+ 2 files changed, 22 insertions(+), 2 deletions(-)
+
+diff --git a/crypto/pkcs7/pk7_doit.c b/crypto/pkcs7/pk7_doit.c
+index f63fbc5..916a35a 100644
+--- a/crypto/pkcs7/pk7_doit.c
++++ b/crypto/pkcs7/pk7_doit.c
+@@ -946,6 +946,9 @@ int PKCS7_signatureVerify(BIO *bio, PKCS7 *p7, PKCS7_SIGNER_INFO *si,
+     STACK_OF(X509_ATTRIBUTE) *sk;
+     BIO *btmp;
+     EVP_PKEY *pkey;
++#ifndef OPENSSL_NO_SM2
++    EVP_PKEY_CTX *pctx = NULL;
++#endif
+ 
+     mdc_tmp = EVP_MD_CTX_new();
+     if (mdc_tmp == NULL) {
+@@ -1013,7 +1016,19 @@ int PKCS7_signatureVerify(BIO *bio, PKCS7 *p7, PKCS7_SIGNER_INFO *si,
+             goto err;
+         }
+ 
+-        if (!EVP_VerifyInit_ex(mdc_tmp, EVP_get_digestbynid(md_type), NULL))
++        pkey = X509_get0_pubkey(x509);
++        if (!pkey) {
++            ret = -1;
++            goto err;
++        }
++
++        ret =
++#ifndef OPENSSL_NO_SM2
++        EVP_PKEY_is_sm2(pkey) ?
++        EVP_DigestVerifyInit(mdc_tmp, &pctx, EVP_get_digestbynid(md_type), NULL, pkey) :
++#endif
++        EVP_VerifyInit_ex(mdc_tmp, EVP_get_digestbynid(md_type), NULL);
++        if (!ret)
+             goto err;
+ 
+         alen = ASN1_item_i2d((ASN1_VALUE *)sk, &abuf,
+@@ -1036,7 +1051,11 @@ int PKCS7_signatureVerify(BIO *bio, PKCS7 *p7, PKCS7_SIGNER_INFO *si,
+         goto err;
+     }
+ 
+-    i = EVP_VerifyFinal(mdc_tmp, os->data, os->length, pkey);
++    i =
++#ifndef OPENSSL_NO_SM2
++    EVP_PKEY_is_sm2(pkey) ? EVP_DigestVerifyFinal(mdc_tmp, os->data, os->length) :
++#endif
++    EVP_VerifyFinal(mdc_tmp, os->data, os->length, pkey);
+     if (i <= 0) {
+         PKCS7err(PKCS7_F_PKCS7_SIGNATUREVERIFY, PKCS7_R_SIGNATURE_FAILURE);
+         ret = -1;
+diff --git a/crypto/sm2/sm2_pmeth.c b/crypto/sm2/sm2_pmeth.c
+index 1998812..53cdbe9 100644
+--- a/crypto/sm2/sm2_pmeth.c
++++ b/crypto/sm2/sm2_pmeth.c
+@@ -221,6 +221,7 @@ static int pkey_sm2_ctrl(EVP_PKEY_CTX *ctx, int type, int p1, void *p2)
+         return 1;
+ 
+     case EVP_PKEY_CTRL_DIGESTINIT:
++    case EVP_PKEY_CTRL_PKCS7_SIGN:
+         /* nothing to be inited, this is to suppress the error... */
+         return 1;
+ 
+-- 
+2.33.0
+

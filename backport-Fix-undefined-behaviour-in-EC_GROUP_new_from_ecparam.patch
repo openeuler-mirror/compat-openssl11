@@ -1,0 +1,41 @@
+From e4b84b7514e5cbcbfc80e31b4ce609c7584e14bb Mon Sep 17 00:00:00 2001
+From: Bernd Edlinger <bernd.edlinger@hotmail.de>
+Date: Fri, 20 May 2022 16:54:41 +0200
+Subject: [PATCH] Fix undefined behaviour in EC_GROUP_new_from_ecparameters
+
+This happens for instance with
+fuzz/corpora/asn1/65cf44e85614c62f10cf3b7a7184c26293a19e4a
+and causes the OPENSSL_malloc below to choke on the
+zero length allocation request.
+
+Reviewed-by: Matt Caswell <matt@openssl.org>
+Reviewed-by: Tomas Mraz <tomas@openssl.org>
+(Merged from https://github.com/openssl/openssl/pull/18363)
+---
+ crypto/ec/ec_asn1.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/crypto/ec/ec_asn1.c b/crypto/ec/ec_asn1.c
+index 4335b3da1a..ad9a54dc50 100644
+--- a/crypto/ec/ec_asn1.c
++++ b/crypto/ec/ec_asn1.c
+@@ -751,6 +751,16 @@ EC_GROUP *EC_GROUP_new_from_ecparameters(const ECPARAMETERS *params)
+ 
+     /* extract seed (optional) */
+     if (params->curve->seed != NULL) {
++        /*
++         * This happens for instance with
++         * fuzz/corpora/asn1/65cf44e85614c62f10cf3b7a7184c26293a19e4a
++         * and causes the OPENSSL_malloc below to choke on the
++         * zero length allocation request.
++         */
++        if (params->curve->seed->length == 0) {
++            ECerr(EC_F_EC_GROUP_NEW_FROM_ECPARAMETERS, EC_R_ASN1_ERROR);
++            goto err;
++        }
+         OPENSSL_free(ret->seed);
+         if ((ret->seed = OPENSSL_malloc(params->curve->seed->length)) == NULL) {
+             ECerr(EC_F_EC_GROUP_NEW_FROM_ECPARAMETERS, ERR_R_MALLOC_FAILURE);
+-- 
+2.17.1
+

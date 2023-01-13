@@ -1,0 +1,80 @@
+From add8c29badb315cb8137655893826562ff12a581 Mon Sep 17 00:00:00 2001
+From: Hugo Landau <hlandau@openssl.org>
+Date: Thu, 3 Mar 2022 17:27:23 +0000
+Subject: [PATCH] Fix issue where OBJ_nid2obj doesn't always raise an error
+
+This was previously fixed in 3.0 but not 1.1.
+
+Fixes #13008.
+
+Reviewed-by: Tomas Mraz <tomas@openssl.org>
+Reviewed-by: Matt Caswell <matt@openssl.org>
+Reviewed-by: Todd Short <todd.short@me.com>
+Reviewed-by: Paul Dale <pauli@openssl.org>
+(Merged from https://github.com/openssl/openssl/pull/17808)
+---
+ crypto/objects/obj_dat.c  |  5 +++--
+ test/asn1_internal_test.c | 27 +++++++++++++++++++++++++++
+ 2 files changed, 30 insertions(+), 2 deletions(-)
+
+diff --git a/crypto/objects/obj_dat.c b/crypto/objects/obj_dat.c
+index 46006fe6cf..a501ca104b 100644
+--- a/crypto/objects/obj_dat.c
++++ b/crypto/objects/obj_dat.c
+@@ -228,9 +228,10 @@ ASN1_OBJECT *OBJ_nid2obj(int n)
+             return NULL;
+         }
+         return (ASN1_OBJECT *)&(nid_objs[n]);
+-    } else if (added == NULL)
++    } else if (added == NULL) {
++        OBJerr(OBJ_F_OBJ_NID2OBJ, OBJ_R_UNKNOWN_NID);
+         return NULL;
+-    else {
++    } else {
+         ad.type = ADDED_NID;
+         ad.obj = &ob;
+         ob.nid = n;
+diff --git a/test/asn1_internal_test.c b/test/asn1_internal_test.c
+index 865e058421..caca0cb15e 100644
+--- a/test/asn1_internal_test.c
++++ b/test/asn1_internal_test.c
+@@ -107,9 +107,36 @@ static int test_standard_methods(void)
+     return 0;
+ }
+ 
++/**********************************************************************
++ *
++ * Regression test for issue where OBJ_nid2obj does not raise
++ * an error when a NID is not registered.
++ *
++ ***/
++static int test_nid2obj_nonexist(void)
++{
++    ASN1_OBJECT *obj;
++    unsigned long err;
++
++    obj = OBJ_nid2obj(INT_MAX);
++    if (!TEST_true(obj == NULL))
++        return 0;
++
++    err = ERR_get_error();
++
++    if (!TEST_int_eq(ERR_GET_FUNC(err), OBJ_F_OBJ_NID2OBJ))
++        return 0;
++
++    if (!TEST_int_eq(ERR_GET_REASON(err), OBJ_R_UNKNOWN_NID))
++        return 0;
++
++    return 1;
++}
++
+ int setup_tests(void)
+ {
+     ADD_TEST(test_tbl_standard);
+     ADD_TEST(test_standard_methods);
++    ADD_TEST(test_nid2obj_nonexist);
+     return 1;
+ }
+-- 
+2.17.1
+

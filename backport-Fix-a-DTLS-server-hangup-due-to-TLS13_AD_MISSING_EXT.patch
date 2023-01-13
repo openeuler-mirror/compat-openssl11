@@ -1,0 +1,440 @@
+From 6e73a0a0bd608daecb8e2c1e46de9d1014194c84 Mon Sep 17 00:00:00 2001
+From: Bernd Edlinger <bernd.edlinger@hotmail.de>
+Date: Tue, 12 Apr 2022 08:27:21 +0200
+Subject: [PATCH] Fix a DTLS server hangup due to TLS13_AD_MISSING_EXTENSION
+
+This causes the DTLS server to enter an error state:
+
+./openssl s_server -dtls
+./openssl s_client -dtls -maxfraglen 512 -sess_out s1.txt
+[...]
+Q
+./openssl s_client -dtls -sess_in s1.txt
+CONNECTED(00000003)
+^C
+./openssl s_client -dtls
+CONNECTED(00000003)
+140335537067840:error:14102410:SSL routines:dtls1_read_bytes:sslv3 alert handshake failure:ssl/record/rec_layer_d1.c:614:SSL alert number 40
+
+At this point the dtls server needs to be restarted,
+because verify_cookie_callback always fails, because
+the previous cookie is checked against the current one.
+The reason for this is not fully understood.
+
+In wireshark we see the following each time:
+c->s Client Hello (without cookie)
+s->c Hello Verify Request (with new cookie)
+s->c Alert (Level: Fatal, Description: Handshake Failure)
+c->s Client Hello (echoes new cookie)
+
+The client gives up when the Alert arrives.
+The Alert is triggered because the server calls
+verify_cookie_callback with the previous cookie,
+although it just sent the current cookie in the
+Hello Verify Request.
+
+However this does only happen because no Alert message
+is sent when the client re-connects the session with
+the missing -maxfraglen option.
+
+Reviewed-by: Tomas Mraz <tomas@openssl.org>
+Reviewed-by: Matt Caswell <matt@openssl.org>
+(Merged from https://github.com/openssl/openssl/pull/18094)
+---
+ ssl/s3_enc.c                           |   2 +
+ ssl/t1_enc.c                           |   2 +
+ test/ssl-tests/10-resumption.conf      | 121 +++++++++++++++++++++++-
+ test/ssl-tests/11-dtls_resumption.conf | 124 ++++++++++++++++++++++++-
+ test/ssl-tests/protocol_version.pm     |  63 +++++++++++++
+ 5 files changed, 310 insertions(+), 2 deletions(-)
+
+diff --git a/ssl/s3_enc.c b/ssl/s3_enc.c
+index 8a89f512fe..eb1f36ac7e 100644
+--- a/ssl/s3_enc.c
++++ b/ssl/s3_enc.c
+@@ -589,6 +589,8 @@ int ssl3_alert_code(int code)
+         return TLS1_AD_NO_APPLICATION_PROTOCOL;
+     case SSL_AD_CERTIFICATE_REQUIRED:
+         return SSL_AD_HANDSHAKE_FAILURE;
++    case SSL_AD_MISSING_EXTENSION:
++        return SSL_AD_HANDSHAKE_FAILURE;
+     default:
+         return -1;
+     }
+diff --git a/ssl/t1_enc.c b/ssl/t1_enc.c
+index c85c0b0310..2087b274d1 100644
+--- a/ssl/t1_enc.c
++++ b/ssl/t1_enc.c
+@@ -672,6 +672,8 @@ int tls1_alert_code(int code)
+         return TLS1_AD_NO_APPLICATION_PROTOCOL;
+     case SSL_AD_CERTIFICATE_REQUIRED:
+         return SSL_AD_HANDSHAKE_FAILURE;
++    case SSL_AD_MISSING_EXTENSION:
++        return SSL_AD_HANDSHAKE_FAILURE;
+     default:
+         return -1;
+     }
+diff --git a/test/ssl-tests/10-resumption.conf b/test/ssl-tests/10-resumption.conf
+index 73de974ab0..a33a1d80e4 100644
+--- a/test/ssl-tests/10-resumption.conf
++++ b/test/ssl-tests/10-resumption.conf
+@@ -1,6 +1,6 @@
+ # Generated with generate_ssl_tests.pl
+ 
+-num_tests = 65
++num_tests = 68
+ 
+ test-0 = 0-resumption
+ test-1 = 1-resumption
+@@ -67,6 +67,9 @@ test-61 = 61-resumption
+ test-62 = 62-resumption
+ test-63 = 63-resumption
+ test-64 = 64-resumption-with-hrr
++test-65 = 65-resumption-when-mfl-ext-is-missing
++test-66 = 66-resumption-when-mfl-ext-is-different
++test-67 = 67-resumption-when-mfl-ext-is-correct
+ # ===========================================================
+ 
+ [0-resumption]
+@@ -2437,3 +2440,119 @@ Method = TLS
+ ResumptionExpected = Yes
+ 
+ 
++# ===========================================================
++
++[65-resumption-when-mfl-ext-is-missing]
++ssl_conf = 65-resumption-when-mfl-ext-is-missing-ssl
++
++[65-resumption-when-mfl-ext-is-missing-ssl]
++server = 65-resumption-when-mfl-ext-is-missing-server
++client = 65-resumption-when-mfl-ext-is-missing-client
++resume-server = 65-resumption-when-mfl-ext-is-missing-server
++resume-client = 65-resumption-when-mfl-ext-is-missing-resume-client
++
++[65-resumption-when-mfl-ext-is-missing-server]
++Certificate = ${ENV::TEST_CERTS_DIR}/servercert.pem
++CipherString = DEFAULT
++PrivateKey = ${ENV::TEST_CERTS_DIR}/serverkey.pem
++
++[65-resumption-when-mfl-ext-is-missing-client]
++CipherString = DEFAULT
++VerifyCAFile = ${ENV::TEST_CERTS_DIR}/rootcert.pem
++VerifyMode = Peer
++
++[65-resumption-when-mfl-ext-is-missing-resume-client]
++CipherString = DEFAULT
++VerifyCAFile = ${ENV::TEST_CERTS_DIR}/rootcert.pem
++VerifyMode = Peer
++
++[test-65]
++ExpectedResult = ServerFail
++HandshakeMode = Resume
++ResumptionExpected = No
++client = 65-resumption-when-mfl-ext-is-missing-client-extra
++
++[65-resumption-when-mfl-ext-is-missing-client-extra]
++MaxFragmentLenExt = 512
++
++
++# ===========================================================
++
++[66-resumption-when-mfl-ext-is-different]
++ssl_conf = 66-resumption-when-mfl-ext-is-different-ssl
++
++[66-resumption-when-mfl-ext-is-different-ssl]
++server = 66-resumption-when-mfl-ext-is-different-server
++client = 66-resumption-when-mfl-ext-is-different-client
++resume-server = 66-resumption-when-mfl-ext-is-different-server
++resume-client = 66-resumption-when-mfl-ext-is-different-resume-client
++
++[66-resumption-when-mfl-ext-is-different-server]
++Certificate = ${ENV::TEST_CERTS_DIR}/servercert.pem
++CipherString = DEFAULT
++PrivateKey = ${ENV::TEST_CERTS_DIR}/serverkey.pem
++
++[66-resumption-when-mfl-ext-is-different-client]
++CipherString = DEFAULT
++VerifyCAFile = ${ENV::TEST_CERTS_DIR}/rootcert.pem
++VerifyMode = Peer
++
++[66-resumption-when-mfl-ext-is-different-resume-client]
++CipherString = DEFAULT
++VerifyCAFile = ${ENV::TEST_CERTS_DIR}/rootcert.pem
++VerifyMode = Peer
++
++[test-66]
++ExpectedResult = ServerFail
++HandshakeMode = Resume
++ResumptionExpected = No
++client = 66-resumption-when-mfl-ext-is-different-client-extra
++resume-client = 66-resumption-when-mfl-ext-is-different-resume-client-extra
++
++[66-resumption-when-mfl-ext-is-different-client-extra]
++MaxFragmentLenExt = 512
++
++[66-resumption-when-mfl-ext-is-different-resume-client-extra]
++MaxFragmentLenExt = 1024
++
++
++# ===========================================================
++
++[67-resumption-when-mfl-ext-is-correct]
++ssl_conf = 67-resumption-when-mfl-ext-is-correct-ssl
++
++[67-resumption-when-mfl-ext-is-correct-ssl]
++server = 67-resumption-when-mfl-ext-is-correct-server
++client = 67-resumption-when-mfl-ext-is-correct-client
++resume-server = 67-resumption-when-mfl-ext-is-correct-server
++resume-client = 67-resumption-when-mfl-ext-is-correct-resume-client
++
++[67-resumption-when-mfl-ext-is-correct-server]
++Certificate = ${ENV::TEST_CERTS_DIR}/servercert.pem
++CipherString = DEFAULT
++PrivateKey = ${ENV::TEST_CERTS_DIR}/serverkey.pem
++
++[67-resumption-when-mfl-ext-is-correct-client]
++CipherString = DEFAULT
++VerifyCAFile = ${ENV::TEST_CERTS_DIR}/rootcert.pem
++VerifyMode = Peer
++
++[67-resumption-when-mfl-ext-is-correct-resume-client]
++CipherString = DEFAULT
++VerifyCAFile = ${ENV::TEST_CERTS_DIR}/rootcert.pem
++VerifyMode = Peer
++
++[test-67]
++ExpectedResult = Success
++HandshakeMode = Resume
++ResumptionExpected = Yes
++client = 67-resumption-when-mfl-ext-is-correct-client-extra
++resume-client = 67-resumption-when-mfl-ext-is-correct-resume-client-extra
++
++[67-resumption-when-mfl-ext-is-correct-client-extra]
++MaxFragmentLenExt = 512
++
++[67-resumption-when-mfl-ext-is-correct-resume-client-extra]
++MaxFragmentLenExt = 512
++
++
+diff --git a/test/ssl-tests/11-dtls_resumption.conf b/test/ssl-tests/11-dtls_resumption.conf
+index a981fa51df..635279a30f 100644
+--- a/test/ssl-tests/11-dtls_resumption.conf
++++ b/test/ssl-tests/11-dtls_resumption.conf
+@@ -1,6 +1,6 @@
+ # Generated with generate_ssl_tests.pl
+ 
+-num_tests = 16
++num_tests = 19
+ 
+ test-0 = 0-resumption
+ test-1 = 1-resumption
+@@ -18,6 +18,9 @@ test-12 = 12-resumption
+ test-13 = 13-resumption
+ test-14 = 14-resumption
+ test-15 = 15-resumption
++test-16 = 16-resumption-when-mfl-ext-is-missing
++test-17 = 17-resumption-when-mfl-ext-is-different
++test-18 = 18-resumption-when-mfl-ext-is-correct
+ # ===========================================================
+ 
+ [0-resumption]
+@@ -618,3 +621,122 @@ Method = DTLS
+ ResumptionExpected = Yes
+ 
+ 
++# ===========================================================
++
++[16-resumption-when-mfl-ext-is-missing]
++ssl_conf = 16-resumption-when-mfl-ext-is-missing-ssl
++
++[16-resumption-when-mfl-ext-is-missing-ssl]
++server = 16-resumption-when-mfl-ext-is-missing-server
++client = 16-resumption-when-mfl-ext-is-missing-client
++resume-server = 16-resumption-when-mfl-ext-is-missing-server
++resume-client = 16-resumption-when-mfl-ext-is-missing-resume-client
++
++[16-resumption-when-mfl-ext-is-missing-server]
++Certificate = ${ENV::TEST_CERTS_DIR}/servercert.pem
++CipherString = DEFAULT
++PrivateKey = ${ENV::TEST_CERTS_DIR}/serverkey.pem
++
++[16-resumption-when-mfl-ext-is-missing-client]
++CipherString = DEFAULT
++VerifyCAFile = ${ENV::TEST_CERTS_DIR}/rootcert.pem
++VerifyMode = Peer
++
++[16-resumption-when-mfl-ext-is-missing-resume-client]
++CipherString = DEFAULT
++VerifyCAFile = ${ENV::TEST_CERTS_DIR}/rootcert.pem
++VerifyMode = Peer
++
++[test-16]
++ExpectedResult = ServerFail
++HandshakeMode = Resume
++Method = DTLS
++ResumptionExpected = No
++client = 16-resumption-when-mfl-ext-is-missing-client-extra
++
++[16-resumption-when-mfl-ext-is-missing-client-extra]
++MaxFragmentLenExt = 512
++
++
++# ===========================================================
++
++[17-resumption-when-mfl-ext-is-different]
++ssl_conf = 17-resumption-when-mfl-ext-is-different-ssl
++
++[17-resumption-when-mfl-ext-is-different-ssl]
++server = 17-resumption-when-mfl-ext-is-different-server
++client = 17-resumption-when-mfl-ext-is-different-client
++resume-server = 17-resumption-when-mfl-ext-is-different-server
++resume-client = 17-resumption-when-mfl-ext-is-different-resume-client
++
++[17-resumption-when-mfl-ext-is-different-server]
++Certificate = ${ENV::TEST_CERTS_DIR}/servercert.pem
++CipherString = DEFAULT
++PrivateKey = ${ENV::TEST_CERTS_DIR}/serverkey.pem
++
++[17-resumption-when-mfl-ext-is-different-client]
++CipherString = DEFAULT
++VerifyCAFile = ${ENV::TEST_CERTS_DIR}/rootcert.pem
++VerifyMode = Peer
++
++[17-resumption-when-mfl-ext-is-different-resume-client]
++CipherString = DEFAULT
++VerifyCAFile = ${ENV::TEST_CERTS_DIR}/rootcert.pem
++VerifyMode = Peer
++
++[test-17]
++ExpectedResult = ServerFail
++HandshakeMode = Resume
++Method = DTLS
++ResumptionExpected = No
++client = 17-resumption-when-mfl-ext-is-different-client-extra
++resume-client = 17-resumption-when-mfl-ext-is-different-resume-client-extra
++
++[17-resumption-when-mfl-ext-is-different-client-extra]
++MaxFragmentLenExt = 512
++
++[17-resumption-when-mfl-ext-is-different-resume-client-extra]
++MaxFragmentLenExt = 1024
++
++
++# ===========================================================
++
++[18-resumption-when-mfl-ext-is-correct]
++ssl_conf = 18-resumption-when-mfl-ext-is-correct-ssl
++
++[18-resumption-when-mfl-ext-is-correct-ssl]
++server = 18-resumption-when-mfl-ext-is-correct-server
++client = 18-resumption-when-mfl-ext-is-correct-client
++resume-server = 18-resumption-when-mfl-ext-is-correct-server
++resume-client = 18-resumption-when-mfl-ext-is-correct-resume-client
++
++[18-resumption-when-mfl-ext-is-correct-server]
++Certificate = ${ENV::TEST_CERTS_DIR}/servercert.pem
++CipherString = DEFAULT
++PrivateKey = ${ENV::TEST_CERTS_DIR}/serverkey.pem
++
++[18-resumption-when-mfl-ext-is-correct-client]
++CipherString = DEFAULT
++VerifyCAFile = ${ENV::TEST_CERTS_DIR}/rootcert.pem
++VerifyMode = Peer
++
++[18-resumption-when-mfl-ext-is-correct-resume-client]
++CipherString = DEFAULT
++VerifyCAFile = ${ENV::TEST_CERTS_DIR}/rootcert.pem
++VerifyMode = Peer
++
++[test-18]
++ExpectedResult = Success
++HandshakeMode = Resume
++Method = DTLS
++ResumptionExpected = Yes
++client = 18-resumption-when-mfl-ext-is-correct-client-extra
++resume-client = 18-resumption-when-mfl-ext-is-correct-resume-client-extra
++
++[18-resumption-when-mfl-ext-is-correct-client-extra]
++MaxFragmentLenExt = 512
++
++[18-resumption-when-mfl-ext-is-correct-resume-client-extra]
++MaxFragmentLenExt = 512
++
++
+diff --git a/test/ssl-tests/protocol_version.pm b/test/ssl-tests/protocol_version.pm
+index 943719e84a..039d782b73 100644
+--- a/test/ssl-tests/protocol_version.pm
++++ b/test/ssl-tests/protocol_version.pm
+@@ -265,6 +265,69 @@ sub generate_resumption_tests {
+         };
+     }
+ 
++    push @client_tests, {
++        "name" => "resumption-when-mfl-ext-is-missing",
++        "server" => {
++        },
++        "client" => {
++            "extra" => {
++                "MaxFragmentLenExt" => 512,
++            },
++        },
++        "resume_client" => {
++        },
++        "test" => {
++            "Method" => $method,
++            "HandshakeMode" => "Resume",
++            "ResumptionExpected" => "No",
++            "ExpectedResult" => "ServerFail",
++        }
++    };
++
++    push @client_tests, {
++        "name" => "resumption-when-mfl-ext-is-different",
++        "server" => {
++        },
++        "client" => {
++            "extra" => {
++                "MaxFragmentLenExt" => 512,
++            },
++        },
++        "resume_client" => {
++            "extra" => {
++                "MaxFragmentLenExt" => 1024,
++            },
++        },
++        "test" => {
++            "Method" => $method,
++            "HandshakeMode" => "Resume",
++            "ResumptionExpected" => "No",
++            "ExpectedResult" => "ServerFail",
++        }
++    };
++
++    push @client_tests, {
++        "name" => "resumption-when-mfl-ext-is-correct",
++        "server" => {
++        },
++        "client" => {
++            "extra" => {
++                "MaxFragmentLenExt" => 512,
++            },
++        },
++        "resume_client" => {
++            "extra" => {
++                "MaxFragmentLenExt" => 512,
++            },
++        },
++        "test" => {
++            "Method" => $method,
++            "HandshakeMode" => "Resume",
++            "ResumptionExpected" => "Yes",
++            "ExpectedResult" => "Success",
++        }
++    };
++
+     return (@server_tests, @client_tests);
+ }
+ 
+-- 
+2.17.1
+

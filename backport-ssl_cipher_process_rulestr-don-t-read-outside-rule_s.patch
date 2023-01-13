@@ -1,0 +1,40 @@
+From 9b3219ba544db82cdad3058b9872058739559944 Mon Sep 17 00:00:00 2001
+From: "Todd C. Miller" <Todd.Miller@sudo.ws>
+Date: Mon, 24 Oct 2022 08:00:48 -0600
+Subject: [PATCH] ssl_cipher_process_rulestr: don't read outside rule_str
+ buffer
+
+If rule_str ended in a "-", "l" was incremented one byte past the
+end of the buffer.  This resulted in an out-of-bounds read when "l"
+is dereferenced at the end of the loop.  It is safest to just return
+early in this case since the condition occurs inside a nested loop.
+
+CLA: trivial
+
+Reviewed-by: Paul Dale <pauli@openssl.org>
+Reviewed-by: Tomas Mraz <tomas@openssl.org>
+(Merged from https://github.com/openssl/openssl/pull/19166)
+
+(cherry picked from commit 428511ca66670e169a0e1b12e7540714b0be4cf8)
+---
+ ssl/ssl_ciph.c | 4 +---
+ 1 file changed, 1 insertion(+), 3 deletions(-)
+
+diff --git a/ssl/ssl_ciph.c b/ssl/ssl_ciph.c
+index 55f919fcd5..62d0a58b22 100644
+--- a/ssl/ssl_ciph.c
++++ b/ssl/ssl_ciph.c
+@@ -1026,9 +1026,7 @@ static int ssl_cipher_process_rulestr(const char *rule_str,
+                  * alphanumeric, so we call this an error.
+                  */
+                 SSLerr(SSL_F_SSL_CIPHER_PROCESS_RULESTR, SSL_R_INVALID_COMMAND);
+-                retval = found = 0;
+-                l++;
+-                break;
++                return 0;
+             }
+ 
+             if (rule == CIPHER_SPECIAL) {
+-- 
+2.17.1
+

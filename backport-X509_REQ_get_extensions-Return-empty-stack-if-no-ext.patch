@@ -1,0 +1,32 @@
+From 0b755cdfb52ff51830aa004799e1f78548423c00 Mon Sep 17 00:00:00 2001
+From: "Dr. David von Oheimb" <David.von.Oheimb@siemens.com>
+Date: Fri, 8 Jan 2021 08:27:17 +0100
+Subject: [PATCH] X509_REQ_get_extensions(): Return empty stack if no
+ extensions found
+
+Reviewed-by: Tomas Mraz <tomas@openssl.org>
+Reviewed-by: Todd Short <todd.short@me.com>
+Reviewed-by: David von Oheimb <david.von.oheimb@siemens.com>
+(Merged from https://github.com/openssl/openssl/pull/18926)
+---
+ crypto/x509/x509_req.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/crypto/x509/x509_req.c b/crypto/x509/x509_req.c
+index dd674926dd..a69f9a723d 100644
+--- a/crypto/x509/x509_req.c
++++ b/crypto/x509/x509_req.c
+@@ -167,7 +167,9 @@ STACK_OF(X509_EXTENSION) *X509_REQ_get_extensions(X509_REQ *req)
+         ext = X509_ATTRIBUTE_get0_type(attr, 0);
+         break;
+     }
+-    if (!ext || (ext->type != V_ASN1_SEQUENCE))
++    if (ext == NULL) /* no extensions is not an error */
++        return sk_X509_EXTENSION_new_null();
++    if (ext->type != V_ASN1_SEQUENCE)
+         return NULL;
+     p = ext->value.sequence->data;
+     return (STACK_OF(X509_EXTENSION) *)
+-- 
+2.17.1
+

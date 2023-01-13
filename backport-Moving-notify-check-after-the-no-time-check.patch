@@ -1,0 +1,40 @@
+From 9eae491721209f302a9a475bffd271370e8bcb8f Mon Sep 17 00:00:00 2001
+From: Ryan Kelley <ryan.parker.kelley@gmail.com>
+Date: Tue, 16 Aug 2022 05:28:50 +0000
+Subject: [PATCH] Moving notify check after the no time check
+
+CLA: trivial
+
+Reviewed-by: Tomas Mraz <tomas@openssl.org>
+Reviewed-by: Paul Dale <pauli@openssl.org>
+(Merged from https://github.com/openssl/openssl/pull/19007)
+
+(cherry picked from commit c92c3dfb99485eb2cfb840e92bd0ece8cdd72d0c)
+---
+ crypto/x509/x509_vfy.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/crypto/x509/x509_vfy.c b/crypto/x509/x509_vfy.c
+index b18489f67f..925fbb5412 100644
+--- a/crypto/x509/x509_vfy.c
++++ b/crypto/x509/x509_vfy.c
+@@ -973,14 +973,14 @@ static int check_crl_time(X509_STORE_CTX *ctx, X509_CRL *crl, int notify)
+     time_t *ptime;
+     int i;
+ 
+-    if (notify)
+-        ctx->current_crl = crl;
+     if (ctx->param->flags & X509_V_FLAG_USE_CHECK_TIME)
+         ptime = &ctx->param->check_time;
+     else if (ctx->param->flags & X509_V_FLAG_NO_CHECK_TIME)
+         return 1;
+     else
+         ptime = NULL;
++    if (notify)
++        ctx->current_crl = crl;
+ 
+     i = X509_cmp_time(X509_CRL_get0_lastUpdate(crl), ptime);
+     if (i == 0) {
+-- 
+2.17.1
+

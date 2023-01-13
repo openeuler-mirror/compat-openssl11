@@ -1,0 +1,30 @@
+From f0dd65378296590d87250bf2130bad567483ee3d Mon Sep 17 00:00:00 2001
+From: Matt Caswell <matt@openssl.org>
+Date: Wed, 3 Apr 2019 09:44:41 +0100
+Subject: [PATCH 08/15] Skip the correct number of tests if SM2 is disabled
+
+Fixes no-sm2 (and also no-sm3 and no-ec)
+
+Reviewed-by: Richard Levitte <levitte@openssl.org>
+Reviewed-by: Paul Dale <paul.dale@oracle.com>
+(Merged from https://github.com/openssl/openssl/pull/8650)
+---
+ test/recipes/25-test_verify.t | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/test/recipes/25-test_verify.t b/test/recipes/25-test_verify.t
+index b340833..d254bd8 100644
+--- a/test/recipes/25-test_verify.t
++++ b/test/recipes/25-test_verify.t
+@@ -411,7 +411,7 @@ SKIP: {
+ }
+ 
+ SKIP: {
+-    skip "SM2 is not supported by this OpenSSL build", 1
++    skip "SM2 is not supported by this OpenSSL build", 2
+ 	      if disabled("sm2");
+ 
+    # Test '-sm2-id' and '-sm2-hex-id'  option
+-- 
+2.20.1 (Apple Git-117)
+

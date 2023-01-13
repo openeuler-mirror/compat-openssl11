@@ -1,0 +1,36 @@
+From c3efe5c96128d699f0884128ce905906bc28ed34 Mon Sep 17 00:00:00 2001
+From: Allan <allanchang96@gmail.com>
+Date: Thu, 7 Jul 2022 16:04:09 -0700
+Subject: [PATCH] Fix memory leak in X509V3_add1_i2d when flag is
+ X509V3_ADD_DELETE
+
+Fixes #18677
+
+Reviewed-by: Hugo Landau <hlandau@openssl.org>
+Reviewed-by: Tomas Mraz <tomas@openssl.org>
+(Merged from https://github.com/openssl/openssl/pull/18698)
+
+(cherry picked from commit 4798e0680b112993815098ca21d7d68ff31ebc6e)
+---
+ crypto/x509v3/v3_lib.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/crypto/x509v3/v3_lib.c b/crypto/x509v3/v3_lib.c
+index 97c1cbc20f..d7e7c9a5cb 100644
+--- a/crypto/x509v3/v3_lib.c
++++ b/crypto/x509v3/v3_lib.c
+@@ -242,8 +242,10 @@ int X509V3_add1_i2d(STACK_OF(X509_EXTENSION) **x, int nid, void *value,
+         }
+         /* If delete, just delete it */
+         if (ext_op == X509V3_ADD_DELETE) {
+-            if (!sk_X509_EXTENSION_delete(*x, extidx))
++            extmp = sk_X509_EXTENSION_delete(*x, extidx);
++            if (extmp == NULL)
+                 return -1;
++            X509_EXTENSION_free(extmp);
+             return 1;
+         }
+     } else {
+-- 
+2.17.1
+

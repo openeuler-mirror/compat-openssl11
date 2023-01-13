@@ -1,0 +1,37 @@
+From ad24941228eafe59fe3807d1659585c4d98eac97 Mon Sep 17 00:00:00 2001
+From: Pauli <pauli@openssl.org>
+Date: Wed, 16 Mar 2022 13:48:27 +1100
+Subject: [PATCH] Fix Coverity 1201763 uninitialised pointer read
+
+Reviewed-by: Shane Lontis <shane.lontis@oracle.com>
+Reviewed-by: Tomas Mraz <tomas@openssl.org>
+(Merged from https://github.com/openssl/openssl/pull/17890)
+
+(cherry picked from commit a0238b7ed87998c48b1c92bad7fa82dcbba507f9)
+---
+ crypto/bn/bn_exp.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/crypto/bn/bn_exp.c b/crypto/bn/bn_exp.c
+index 9531acfc3c..451e88ac3c 100644
+--- a/crypto/bn/bn_exp.c
++++ b/crypto/bn/bn_exp.c
+@@ -188,13 +188,14 @@ int BN_mod_exp_recp(BIGNUM *r, const BIGNUM *a, const BIGNUM *p,
+         return ret;
+     }
+ 
++    BN_RECP_CTX_init(&recp);
++
+     BN_CTX_start(ctx);
+     aa = BN_CTX_get(ctx);
+     val[0] = BN_CTX_get(ctx);
+     if (val[0] == NULL)
+         goto err;
+ 
+-    BN_RECP_CTX_init(&recp);
+     if (m->neg) {
+         /* ignore sign of 'm' */
+         if (!BN_copy(aa, m))
+-- 
+2.17.1
+

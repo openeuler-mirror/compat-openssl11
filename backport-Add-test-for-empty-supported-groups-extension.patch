@@ -1,0 +1,157 @@
+From c7d6c08290b67cbeef2b4f636f04788ea405520a Mon Sep 17 00:00:00 2001
+From: Tomas Mraz <tomas@openssl.org>
+Date: Fri, 29 Apr 2022 17:02:19 +0200
+Subject: [PATCH] Add test for empty supported-groups extension
+
+Reviewed-by: Paul Dale <pauli@openssl.org>
+Reviewed-by: Matt Caswell <matt@openssl.org>
+(Merged from https://github.com/openssl/openssl/pull/18213)
+---
+ test/recipes/80-test_ssl_new.t             |  4 +-
+ test/ssl-tests/16-certstatus.conf          |  0
+ test/ssl-tests/30-supported-groups.conf    | 54 ++++++++++++++++++++++
+ test/ssl-tests/30-supported-groups.conf.in | 45 ++++++++++++++++++
+ 4 files changed, 102 insertions(+), 1 deletion(-)
+ delete mode 100644 test/ssl-tests/16-certstatus.conf
+ create mode 100644 test/ssl-tests/30-supported-groups.conf
+ create mode 100644 test/ssl-tests/30-supported-groups.conf.in
+
+diff --git a/test/recipes/80-test_ssl_new.t b/test/recipes/80-test_ssl_new.t
+index 81d8f59a70..fa62b30850 100644
+--- a/test/recipes/80-test_ssl_new.t
++++ b/test/recipes/80-test_ssl_new.t
+@@ -28,7 +28,7 @@ map { s/\^// } @conf_files if $^O eq "VMS";
+ 
+ # We hard-code the number of tests to double-check that the globbing above
+ # finds all files as expected.
+-plan tests => 29;  # = scalar @conf_srcs
++plan tests => 30;  # = scalar @conf_srcs
+ 
+ # Some test results depend on the configuration of enabled protocols. We only
+ # verify generated sources in the default configuration.
+@@ -70,6 +70,8 @@ my %conf_dependent_tests = (
+   "25-cipher.conf" => disabled("poly1305") || disabled("chacha"),
+   "27-ticket-appdata.conf" => !$is_default_tls,
+   "28-seclevel.conf" => disabled("tls1_2") || $no_ec,
++  "30-supported-groups.conf" => disabled("tls1_2") || disabled("tls1_3")
++                                || $no_ec || $no_ec2m
+ );
+ 
+ # Add your test here if it should be skipped for some compile-time
+diff --git a/test/ssl-tests/16-certstatus.conf b/test/ssl-tests/16-certstatus.conf
+deleted file mode 100644
+index e69de29bb2..0000000000
+diff --git a/test/ssl-tests/30-supported-groups.conf b/test/ssl-tests/30-supported-groups.conf
+new file mode 100644
+index 0000000000..4280db7114
+--- /dev/null
++++ b/test/ssl-tests/30-supported-groups.conf
+@@ -0,0 +1,54 @@
++# Generated with generate_ssl_tests.pl
++
++num_tests = 2
++
++test-0 = 0-Just a sanity test case
++test-1 = 1-Pass with empty groups with TLS1.2
++# ===========================================================
++
++[0-Just a sanity test case]
++ssl_conf = 0-Just a sanity test case-ssl
++
++[0-Just a sanity test case-ssl]
++server = 0-Just a sanity test case-server
++client = 0-Just a sanity test case-client
++
++[0-Just a sanity test case-server]
++Certificate = ${ENV::TEST_CERTS_DIR}/servercert.pem
++CipherString = DEFAULT
++PrivateKey = ${ENV::TEST_CERTS_DIR}/serverkey.pem
++
++[0-Just a sanity test case-client]
++CipherString = DEFAULT
++VerifyCAFile = ${ENV::TEST_CERTS_DIR}/rootcert.pem
++VerifyMode = Peer
++
++[test-0]
++ExpectedResult = Success
++
++
++# ===========================================================
++
++[1-Pass with empty groups with TLS1.2]
++ssl_conf = 1-Pass with empty groups with TLS1.2-ssl
++
++[1-Pass with empty groups with TLS1.2-ssl]
++server = 1-Pass with empty groups with TLS1.2-server
++client = 1-Pass with empty groups with TLS1.2-client
++
++[1-Pass with empty groups with TLS1.2-server]
++Certificate = ${ENV::TEST_CERTS_DIR}/servercert.pem
++CipherString = DEFAULT
++PrivateKey = ${ENV::TEST_CERTS_DIR}/serverkey.pem
++
++[1-Pass with empty groups with TLS1.2-client]
++CipherString = DEFAULT
++Groups = sect163k1
++MaxProtocol = TLSv1.2
++VerifyCAFile = ${ENV::TEST_CERTS_DIR}/rootcert.pem
++VerifyMode = Peer
++
++[test-1]
++ExpectedResult = Success
++
++
+diff --git a/test/ssl-tests/30-supported-groups.conf.in b/test/ssl-tests/30-supported-groups.conf.in
+new file mode 100644
+index 0000000000..438a07a11f
+--- /dev/null
++++ b/test/ssl-tests/30-supported-groups.conf.in
+@@ -0,0 +1,45 @@
++# -*- mode: perl; -*-
++# Copyright 2016-2020 The OpenSSL Project Authors. All Rights Reserved.
++#
++# Licensed under the OpenSSL license (the "License").  You may not use
++# this file except in compliance with the License.  You can obtain a copy
++# in the file LICENSE in the source distribution or at
++# https://www.openssl.org/source/license.html
++
++
++## SSL test configurations
++
++package ssltests;
++use OpenSSL::Test::Utils;
++
++our @tests = (
++    {
++        name => "Just a sanity test case",
++        server => { },
++        client => { },
++        test   => { "ExpectedResult" => "Success" },
++    },
++);
++
++our @tests_tls1_3 = (
++    {
++        name => "Fail empty groups with TLS1.3",
++        server => { },
++        client => { "Groups" => "sect163k1" },
++        test   => { "ExpectedResult" => "ClientFail" },
++    },
++);
++
++our @tests_tls1_2 = (
++    {
++        name => "Pass with empty groups with TLS1.2",
++        server => { },
++        client => { "Groups" => "sect163k1",
++                    "MaxProtocol" => "TLSv1.2" },
++        test   => { "ExpectedResult" => "Success" },
++    },
++);
++
++push @tests, @tests_tls1_3 unless disabled("tls1_3")
++                                  || !disabled("ec2m") || disabled("ec");
++push @tests, @tests_tls1_2 unless disabled("tls1_2") || disabled("ec");
+-- 
+2.17.1
+

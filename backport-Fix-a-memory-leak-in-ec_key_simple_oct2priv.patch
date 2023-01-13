@@ -1,0 +1,61 @@
+From 8e1ece20cdb4a584be5311370256c4e813c09826 Mon Sep 17 00:00:00 2001
+From: Bernd Edlinger <bernd.edlinger@hotmail.de>
+Date: Fri, 20 May 2022 16:15:44 +0200
+Subject: [PATCH] Fix a memory leak in ec_key_simple_oct2priv
+
+This is reproducible with my error injection patch:
+
+$ ERROR_INJECT=1652710284 ../util/shlib_wrap.sh ./server-test ./corpora/server/4e48da8aecce6b9b58e8e4dbbf0523e6d2dd56dc
+140587884632000:error:03078041:bignum routines:bn_expand_internal:malloc failure:crypto/bn/bn_lib.c:282:
+140587884632000:error:10103003:elliptic curve routines:ec_key_simple_oct2priv:BN lib:crypto/ec/ec_key.c:662:
+140587884632000:error:100DE08E:elliptic curve routines:old_ec_priv_decode:decode error:crypto/ec/ec_ameth.c:464:
+140587884632000:error:0D0680A8:asn1 encoding routines:asn1_check_tlen:wrong tag:crypto/asn1/tasn_dec.c:1149:
+140587884632000:error:0D07803A:asn1 encoding routines:asn1_item_embed_d2i:nested asn1 error:crypto/asn1/tasn_dec.c:309:Type=X509_ALGOR
+140587884632000:error:0D08303A:asn1 encoding routines:asn1_template_noexp_d2i:nested asn1 error:crypto/asn1/tasn_dec.c:646:Field=pkeyalg, Type=PKCS8_PRIV_KEY_INFO
+140587884632000:error:0907B00D:PEM routines:PEM_read_bio_PrivateKey:ASN1 lib:crypto/pem/pem_pkey.c:88:
+
+=================================================================
+==19676==ERROR: LeakSanitizer: detected memory leaks
+
+Direct leak of 24 byte(s) in 1 object(s) allocated from:
+    #0 0x7fdd2a6bb09f in __interceptor_malloc ../../../../gcc-trunk/libsanitizer/asan/asan_malloc_linux.cpp:69
+    #1 0x7fdd2a2fa430 in CRYPTO_zalloc crypto/mem.c:230
+    #2 0x7fdd2a15df11 in BN_new crypto/bn/bn_lib.c:246
+    #3 0x7fdd2a15df88 in BN_secure_new crypto/bn/bn_lib.c:257
+    #4 0x7fdd2a247390 in ec_key_simple_oct2priv crypto/ec/ec_key.c:655
+    #5 0x7fdd2a241fc5 in d2i_ECPrivateKey crypto/ec/ec_asn1.c:1030
+    #6 0x7fdd2a23dac5 in old_ec_priv_decode crypto/ec/ec_ameth.c:463
+    #7 0x7fdd2a109db7 in d2i_PrivateKey crypto/asn1/d2i_pr.c:46
+    #8 0x7fdd2a33ab16 in PEM_read_bio_PrivateKey crypto/pem/pem_pkey.c:84
+    #9 0x7fdd2a3330b6 in PEM_read_bio_ECPrivateKey crypto/pem/pem_all.c:151
+    #10 0x402dba in FuzzerTestOneInput fuzz/server.c:592
+    #11 0x40370b in testfile fuzz/test-corpus.c:182
+    #12 0x402846 in main fuzz/test-corpus.c:226
+    #13 0x7fdd297b9f44 in __libc_start_main (/lib/x86_64-linux-gnu/libc.so.6+0x21f44)
+
+SUMMARY: AddressSanitizer: 24 byte(s) leaked in 1 allocation(s).
+
+Reviewed-by: Tomas Mraz <tomas@openssl.org>
+Reviewed-by: Matt Caswell <matt@openssl.org>
+(Merged from https://github.com/openssl/openssl/pull/18361)
+---
+ crypto/ec/ec_key.c | 3 +--
+ 1 file changed, 1 insertion(+), 2 deletions(-)
+
+diff --git a/crypto/ec/ec_key.c b/crypto/ec/ec_key.c
+index 23efbd015c..27d5a43b5f 100644
+--- a/crypto/ec/ec_key.c
++++ b/crypto/ec/ec_key.c
+@@ -657,8 +657,7 @@ int ec_key_simple_oct2priv(EC_KEY *eckey, const unsigned char *buf, size_t len)
+         ECerr(EC_F_EC_KEY_SIMPLE_OCT2PRIV, ERR_R_MALLOC_FAILURE);
+         return 0;
+     }
+-    eckey->priv_key = BN_bin2bn(buf, len, eckey->priv_key);
+-    if (eckey->priv_key == NULL) {
++    if (BN_bin2bn(buf, len, eckey->priv_key) == NULL) {
+         ECerr(EC_F_EC_KEY_SIMPLE_OCT2PRIV, ERR_R_BN_LIB);
+         return 0;
+     }
+-- 
+2.17.1
+

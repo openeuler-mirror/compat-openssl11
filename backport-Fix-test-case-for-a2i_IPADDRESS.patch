@@ -1,0 +1,42 @@
+From c3b0279bda7bf4f0f81a3dba952698fa68a51639 Mon Sep 17 00:00:00 2001
+From: Amir Mohammadi <amiremohamadi@yahoo.com>
+Date: Wed, 4 Aug 2021 09:44:29 +0430
+Subject: [PATCH] Fix test case for a2i_IPADDRESS
+
+(cherry picked from commit 9b887d5d5a8ef9aa1c3ce6e54a82ddcba25b9415)
+
+Reviewed-by: Tomas Mraz <tomas@openssl.org>
+Reviewed-by: Dmitry Belyavskiy <beldmit@gmail.com>
+Reviewed-by: Hugo Landau <hlandau@openssl.org>
+(Merged from https://github.com/openssl/openssl/pull/18847)
+---
+ test/x509_internal_test.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/test/x509_internal_test.c b/test/x509_internal_test.c
+index 3eec970352..63f350f74b 100644
+--- a/test/x509_internal_test.c
++++ b/test/x509_internal_test.c
+@@ -61,7 +61,6 @@ typedef struct {
+     const char *ipasc;
+     const char *data;
+     int length;
+-    ASN1_OCTET_STRING ip;
+ } IP_TESTDATA;
+ 
+ static IP_TESTDATA a2i_ipaddress_tests[] = {
+@@ -81,8 +80,10 @@ static IP_TESTDATA a2i_ipaddress_tests[] = {
+     {"example.test", NULL, 0},
+     {"", NULL, 0},
+ 
++    {"1.2.3.4 ", "\x01\x02\x03\x04", 4},
++    {" 1.2.3.4", "\x01\x02\x03\x04", 4},
++    {" 1.2.3.4 ", "\x01\x02\x03\x04", 4},
+     {"1.2.3.4.example.test", NULL, 0},
+-    {"1.2.3.4 ", NULL, 0},
+ };
+ 
+ 
+-- 
+2.17.1
+

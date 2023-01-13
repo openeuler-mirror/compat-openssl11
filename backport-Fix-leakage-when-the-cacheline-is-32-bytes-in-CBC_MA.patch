@@ -1,0 +1,61 @@
+From 6ef91d8153e04a2302bff11b29caf7e888b62fe8 Mon Sep 17 00:00:00 2001
+From: basavesh <basavesh.shivakumar@gmail.com>
+Date: Tue, 5 Apr 2022 17:49:09 +0200
+Subject: [PATCH] Fix leakage when the cacheline is 32-bytes in
+ CBC_MAC_ROTATE_IN_PLACE
+
+rotated_mac is a 64-byte aligned buffer of size 64 and rotate_offset is secret.
+Consider a weaker leakage model(CL) where only cacheline base address is leaked,
+i.e address/32 for 32-byte cacheline(CL32).
+
+Previous code used to perform two loads
+    1. rotated_mac[rotate_offset ^ 32] and
+    2. rotated_mac[rotate_offset++]
+which would leak 2q + 1, 2q for 0 <= rotate_offset < 32
+and 2q, 2q + 1 for 32 <= rotate_offset < 64
+
+The proposed fix performs load operations which will always leak 2q, 2q + 1 and
+selects the appropriate value in constant-time.
+
+Reviewed-by: Matt Caswell <matt@openssl.org>
+Reviewed-by: Tomas Mraz <tomas@openssl.org>
+(Merged from https://github.com/openssl/openssl/pull/18050)
+---
+ ssl/record/ssl3_record.c | 14 +++++++++++---
+ 1 file changed, 11 insertions(+), 3 deletions(-)
+
+diff --git a/ssl/record/ssl3_record.c b/ssl/record/ssl3_record.c
+index f158544789..69f1a64cb3 100644
+--- a/ssl/record/ssl3_record.c
++++ b/ssl/record/ssl3_record.c
+@@ -1532,6 +1532,7 @@ int ssl3_cbc_copy_mac(unsigned char *out,
+ #if defined(CBC_MAC_ROTATE_IN_PLACE)
+     unsigned char rotated_mac_buf[64 + EVP_MAX_MD_SIZE];
+     unsigned char *rotated_mac;
++    char aux1, aux2, aux3, mask;
+ #else
+     unsigned char rotated_mac[EVP_MAX_MD_SIZE];
+ #endif
+@@ -1581,9 +1582,16 @@ int ssl3_cbc_copy_mac(unsigned char *out,
+ #if defined(CBC_MAC_ROTATE_IN_PLACE)
+     j = 0;
+     for (i = 0; i < md_size; i++) {
+-        /* in case cache-line is 32 bytes, touch second line */
+-        ((volatile unsigned char *)rotated_mac)[rotate_offset ^ 32];
+-        out[j++] = rotated_mac[rotate_offset++];
++        /*
++         * in case cache-line is 32 bytes,
++         * load from both lines and select appropriately
++         */
++        aux1 = rotated_mac[rotate_offset & ~32];
++        aux2 = rotated_mac[rotate_offset | 32];
++        mask = constant_time_eq_8(rotate_offset & ~32, rotate_offset);
++        aux3 = constant_time_select_8(mask, aux1, aux2);
++        out[j++] = aux3;
++        rotate_offset++;
+         rotate_offset &= constant_time_lt_s(rotate_offset, md_size);
+     }
+ #else
+-- 
+2.17.1
+

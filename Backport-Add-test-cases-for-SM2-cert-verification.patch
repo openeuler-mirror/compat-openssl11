@@ -1,0 +1,127 @@
+From c08251384c0405c151a90b315b8f333c38c74eb2 Mon Sep 17 00:00:00 2001
+From: Paul Yang <yang.yang@baishancloud.com>
+Date: Wed, 13 Mar 2019 16:54:11 +0800
+Subject: [PATCH 05/15] Add test cases for SM2 cert verification
+
+This follows #8321 which added the SM2 certificate verification feature.
+This commit adds some test cases for #8321.
+
+Reviewed-by: Paul Dale <paul.dale@oracle.com>
+(Merged from https://github.com/openssl/openssl/pull/8465)
+---
+ test/certs/sm2-ca-cert.pem      | 14 +++++++++++++
+ test/certs/{sm2.crt => sm2.pem} |  0
+ test/recipes/20-test_pkeyutl.t  | 37 +++++++++++++--------------------
+ test/recipes/25-test_verify.t   | 14 ++++++++++++-
+ 4 files changed, 42 insertions(+), 23 deletions(-)
+ create mode 100644 test/certs/sm2-ca-cert.pem
+ rename test/certs/{sm2.crt => sm2.pem} (100%)
+
+diff --git a/test/certs/sm2-ca-cert.pem b/test/certs/sm2-ca-cert.pem
+new file mode 100644
+index 0000000..5677ac6
+--- /dev/null
++++ b/test/certs/sm2-ca-cert.pem
+@@ -0,0 +1,14 @@
++-----BEGIN CERTIFICATE-----
++MIICJDCCAcqgAwIBAgIJAOlkpDpSrmVbMAoGCCqBHM9VAYN1MGgxCzAJBgNVBAYT
++AkNOMQswCQYDVQQIDAJMTjERMA8GA1UEBwwIU2hlbnlhbmcxETAPBgNVBAoMCFRl
++c3QgT3JnMRAwDgYDVQQLDAdUZXN0IE9VMRQwEgYDVQQDDAtUZXN0IFNNMiBDQTAe
++Fw0xOTAyMTkwNzA1NDhaFw0yMzAzMzAwNzA1NDhaMGgxCzAJBgNVBAYTAkNOMQsw
++CQYDVQQIDAJMTjERMA8GA1UEBwwIU2hlbnlhbmcxETAPBgNVBAoMCFRlc3QgT3Jn
++MRAwDgYDVQQLDAdUZXN0IE9VMRQwEgYDVQQDDAtUZXN0IFNNMiBDQTBZMBMGByqG
++SM49AgEGCCqBHM9VAYItA0IABHRYnqErofBdXPptvvO7+BSVJxcpHuTGnZ+UPrbU
++5kVEUMaUnNOeMJZl/vRGimZCm/AkReJmRfnb15ESHR+ssp6jXTBbMB0GA1UdDgQW
++BBTFjcWu/zJgSZ5SKUlU5Vx4/0W5dDAfBgNVHSMEGDAWgBTFjcWu/zJgSZ5SKUlU
++5Vx4/0W5dDAMBgNVHRMEBTADAQH/MAsGA1UdDwQEAwIBBjAKBggqgRzPVQGDdQNI
++ADBFAiEAs6byi1nSQtFELOw/2tQIv5AEsZFR5MJ/oB2ztXzs2LYCIEfIw4xlUH6X
++YFhs4RnIa0K9Ng1ebsGPrifYkudwBIk3
++-----END CERTIFICATE-----
+diff --git a/test/certs/sm2.crt b/test/certs/sm2.pem
+similarity index 100%
+rename from test/certs/sm2.crt
+rename to test/certs/sm2.pem
+diff --git a/test/recipes/20-test_pkeyutl.t b/test/recipes/20-test_pkeyutl.t
+index 1457530..a36d41e 100644
+--- a/test/recipes/20-test_pkeyutl.t
++++ b/test/recipes/20-test_pkeyutl.t
+@@ -17,32 +17,25 @@ setup("test_pkeyutl");
+ 
+ plan tests => 2;
+ 
+-sub sign
+-{
+-    # Utilize the sm2.crt as the TBS file
+-    return run(app(([ 'openssl', 'pkeyutl', '-sign',
+-                      '-in', srctop_file('test', 'certs', 'sm2.crt'),
+-                      '-inkey', srctop_file('test', 'certs', 'sm2.key'),
+-                      '-out', 'signature.sm2', '-rawin',
+-                      '-digest', 'sm3', '-pkeyopt', 'sm2_id:someid'])));
+-}
+-
+-sub verify
+-{
+-    # Utilize the sm2.crt as the TBS file
+-    return run(app(([ 'openssl', 'pkeyutl', '-verify', '-certin',
+-                      '-in', srctop_file('test', 'certs', 'sm2.crt'),
+-                      '-inkey', srctop_file('test', 'certs', 'sm2.crt'),
+-                      '-sigfile', 'signature.sm2', '-rawin',
+-                      '-digest', 'sm3', '-pkeyopt', 'sm2_id:someid'])));
+-}
++# For the tests below we use the cert itself as the TBS file
+ 
+ SKIP: {
+     skip "Skipping tests that require EC, SM2 or SM3", 2
+         if disabled("ec") || disabled("sm2") || disabled("sm3");
+ 
+-    ok(sign, "Sign a piece of data using SM2");
+-    ok(verify, "Verify an SM2 signature against a piece of data");
++    # SM2
++    ok(run(app(([ 'openssl', 'pkeyutl', '-sign',
++                      '-in', srctop_file('test', 'certs', 'sm2.pem'),
++                      '-inkey', srctop_file('test', 'certs', 'sm2.key'),
++                      '-out', 'signature.dat', '-rawin',
++                      '-digest', 'sm3', '-pkeyopt', 'sm2_id:someid']))),
++                      "Sign a piece of data using SM2");
++    ok(run(app(([ 'openssl', 'pkeyutl', '-verify', '-certin',
++                      '-in', srctop_file('test', 'certs', 'sm2.pem'),
++                      '-inkey', srctop_file('test', 'certs', 'sm2.pem'),
++                      '-sigfile', 'signature.dat', '-rawin',
++                      '-digest', 'sm3', '-pkeyopt', 'sm2_id:someid']))),
++                      "Verify an SM2 signature against a piece of data");
+ }
+ 
+-unlink 'signature.sm2';
++unlink 'signature.dat';
+diff --git a/test/recipes/25-test_verify.t b/test/recipes/25-test_verify.t
+index ffa48ed..b340833 100644
+--- a/test/recipes/25-test_verify.t
++++ b/test/recipes/25-test_verify.t
+@@ -27,7 +27,7 @@ sub verify {
+     run(app([@args]));
+ }
+ 
+-plan tests => 146;
++plan tests => 148;
+ 
+ # Canonical success
+ ok(verify("ee-cert", "sslserver", ["root-cert"], ["ca-cert"]),
+@@ -409,3 +409,15 @@ SKIP: {
+        "ED25519 signature");
+ 
+ }
++
++SKIP: {
++    skip "SM2 is not supported by this OpenSSL build", 1
++	      if disabled("sm2");
++
++   # Test '-sm2-id' and '-sm2-hex-id'  option
++   ok(verify("sm2", "any", ["sm2-ca-cert"], [], "-sm2-id", "1234567812345678"),
++       "SM2 ID test");
++   ok(verify("sm2", "any", ["sm2-ca-cert"], [], "-sm2-hex-id",
++             "31323334353637383132333435363738"),
++       "SM2 hex ID test");
++}
+-- 
+2.20.1 (Apple Git-117)
+

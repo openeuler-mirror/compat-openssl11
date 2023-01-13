@@ -1,0 +1,1189 @@
+From 0bacd53ecedfef3ca8af4a8884c46ec8e47c83fa Mon Sep 17 00:00:00 2001
+From: Paul Yang <yang.yang@baishancloud.com>
+Date: Wed, 5 Jun 2019 14:46:48 +0800
+Subject: [PATCH 10/15] Support SM2 certificate signing
+
+SM2 certificate signing request can be created and signed by OpenSSL
+now, both in library and apps.
+
+Documentation and test cases are added.
+
+Reviewed-by: Tim Hudson <tjh@openssl.org>
+Reviewed-by: Shane Lontis <shane.lontis@oracle.com>
+(Merged from https://github.com/openssl/openssl/pull/9085)
+---
+ CHANGES                             |   3 +
+ apps/ca.c                           |  68 ++++++++++++-
+ apps/req.c                          | 149 ++++++++++++++++++++++++++--
+ crypto/asn1/a_sign.c                |  13 ++-
+ crypto/ec/ec_pmeth.c                |   3 +-
+ crypto/err/openssl.txt              |   3 +
+ crypto/x509/x509_err.c              |   4 +
+ crypto/x509/x_all.c                 |  85 ++++++++++++----
+ crypto/x509/x_req.c                 |  38 ++++++-
+ crypto/x509/x_x509.c                |   3 +
+ doc/man1/ca.pod                     |  16 +++
+ doc/man1/req.pod                    |  21 ++++
+ doc/man3/X509_get0_sm2_id.pod       |  12 ++-
+ include/crypto/x509.h               |   3 +
+ include/openssl/x509.h              |   2 +
+ include/openssl/x509err.h           |   3 +
+ test/certs/sm2-csr.pem              |   9 ++
+ test/certs/sm2-root.crt             |  14 +++
+ test/certs/sm2-root.key             |   5 +
+ test/recipes/25-test_req.t          |  21 +++-
+ test/recipes/70-test_verify_extra.t |   3 +-
+ test/recipes/80-test_ca.t           |  20 +++-
+ test/verify_extra_test.c            |  45 ++++++++-
+ util/libcrypto.num                  |   2 +
+ 24 files changed, 501 insertions(+), 44 deletions(-)
+ create mode 100644 test/certs/sm2-csr.pem
+ create mode 100644 test/certs/sm2-root.crt
+ create mode 100644 test/certs/sm2-root.key
+
+diff --git a/CHANGES b/CHANGES
+index 9d58cb0..6ab70fe 100644
+--- a/CHANGES
++++ b/CHANGES
+@@ -9,6 +9,9 @@
+ 
+  Changes between 1.1.1l and 1.1.1m [14 Dec 2021]
+ 
++  *) Support SM2 signing and verification schemes with X509 certificate.
++     [Paul Yang]
++
+   *) Avoid loading of a dynamic engine twice.
+ 
+      [Bernd Edlinger]
+diff --git a/apps/ca.c b/apps/ca.c
+index 390ac37..795ee2c 100755
+--- a/apps/ca.c
++++ b/apps/ca.c
+@@ -96,7 +96,8 @@ static int certify(X509 **xret, const char *infile, EVP_PKEY *pkey, X509 *x509,
+                    const char *enddate,
+                    long days, int batch, const char *ext_sect, CONF *conf,
+                    int verbose, unsigned long certopt, unsigned long nameopt,
+-                   int default_op, int ext_copy, int selfsign);
++                   int default_op, int ext_copy, int selfsign,
++                   unsigned char *sm2_id, size_t sm2idlen);
+ static int certify_cert(X509 **xret, const char *infile, EVP_PKEY *pkey, X509 *x509,
+                         const EVP_MD *dgst, STACK_OF(OPENSSL_STRING) *sigopts,
+                         STACK_OF(CONF_VALUE) *policy, CA_DB *db,
+@@ -147,7 +148,7 @@ typedef enum OPTION_choice {
+     OPT_INFILES, OPT_SS_CERT, OPT_SPKAC, OPT_REVOKE, OPT_VALID,
+     OPT_EXTENSIONS, OPT_EXTFILE, OPT_STATUS, OPT_UPDATEDB, OPT_CRLEXTS,
+     OPT_RAND_SERIAL,
+-    OPT_R_ENUM,
++    OPT_R_ENUM, OPT_SM2ID, OPT_SM2HEXID,
+     /* Do not change the order here; see related case statements below */
+     OPT_CRL_REASON, OPT_CRL_HOLD, OPT_CRL_COMPROMISE, OPT_CRL_CA_COMPROMISE
+ } OPTION_CHOICE;
+@@ -217,6 +218,12 @@ const OPTIONS ca_options[] = {
+     OPT_R_OPTIONS,
+ #ifndef OPENSSL_NO_ENGINE
+     {"engine", OPT_ENGINE, 's', "Use engine, possibly a hardware device"},
++#endif
++#ifndef OPENSSL_NO_SM2
++    {"sm2-id", OPT_SM2ID, 's',
++     "Specify an ID string to verify an SM2 certificate request"},
++    {"sm2-hex-id", OPT_SM2HEXID, 's',
++     "Specify a hex ID string to verify an SM2 certificate request"},
+ #endif
+     {NULL}
+ };
+@@ -262,6 +269,9 @@ int ca_main(int argc, char **argv)
+     REVINFO_TYPE rev_type = REV_NONE;
+     X509_REVOKED *r = NULL;
+     OPTION_CHOICE o;
++    unsigned char *sm2_id = NULL;
++    size_t sm2_idlen = 0;
++    int sm2_free = 0;
+ 
+     prog = opt_init(argc, argv, ca_options);
+     while ((o = opt_next()) != OPT_EOF) {
+@@ -425,6 +435,30 @@ opthelp:
+         case OPT_ENGINE:
+             e = setup_engine(opt_arg(), 0);
+             break;
++        case OPT_SM2ID:
++            /* we assume the input is not a hex string */
++            if (sm2_id != NULL) {
++                BIO_printf(bio_err,
++                           "Use one of the options 'sm2-hex-id' or 'sm2-id'\n");
++                goto end;
++            }
++            sm2_id = (unsigned char *)opt_arg();
++            sm2_idlen = strlen((const char *)sm2_id);
++            break;
++        case OPT_SM2HEXID:
++            /* try to parse the input as hex string first */
++            if (sm2_id != NULL) {
++                BIO_printf(bio_err,
++                           "Use one of the options 'sm2-hex-id' or 'sm2-id'\n");
++                goto end;
++            }
++            sm2_free = 1;
++            sm2_id = OPENSSL_hexstr2buf(opt_arg(), (long *)&sm2_idlen);
++            if (sm2_id == NULL) {
++                BIO_printf(bio_err, "Invalid hex string input\n");
++                goto end;
++            }
++            break;
+         }
+     }
+ end_of_options:
+@@ -913,7 +947,8 @@ end_of_options:
+             j = certify(&x, infile, pkey, x509p, dgst, sigopts, attribs, db,
+                         serial, subj, chtype, multirdn, email_dn, startdate,
+                         enddate, days, batch, extensions, conf, verbose,
+-                        certopt, get_nameopt(), default_op, ext_copy, selfsign);
++                        certopt, get_nameopt(), default_op, ext_copy, selfsign,
++                        sm2_id, sm2_idlen);
+             if (j < 0)
+                 goto end;
+             if (j > 0) {
+@@ -932,7 +967,8 @@ end_of_options:
+             j = certify(&x, argv[i], pkey, x509p, dgst, sigopts, attribs, db,
+                         serial, subj, chtype, multirdn, email_dn, startdate,
+                         enddate, days, batch, extensions, conf, verbose,
+-                        certopt, get_nameopt(), default_op, ext_copy, selfsign);
++                        certopt, get_nameopt(), default_op, ext_copy, selfsign,
++                        sm2_id, sm2_idlen);
+             if (j < 0)
+                 goto end;
+             if (j > 0) {
+@@ -1230,6 +1266,8 @@ end_of_options:
+     ret = 0;
+ 
+  end:
++    if (sm2_free)
++        OPENSSL_free(sm2_id);
+     if (ret)
+         ERR_print_errors(bio_err);
+     BIO_free_all(Sout);
+@@ -1268,7 +1306,8 @@ static int certify(X509 **xret, const char *infile, EVP_PKEY *pkey, X509 *x509,
+                    const char *enddate,
+                    long days, int batch, const char *ext_sect, CONF *lconf,
+                    int verbose, unsigned long certopt, unsigned long nameopt,
+-                   int default_op, int ext_copy, int selfsign)
++                   int default_op, int ext_copy, int selfsign,
++                   unsigned char *sm2id, size_t sm2idlen)
+ {
+     X509_REQ *req = NULL;
+     BIO *in = NULL;
+@@ -1300,6 +1339,25 @@ static int certify(X509 **xret, const char *infile, EVP_PKEY *pkey, X509 *x509,
+         BIO_printf(bio_err, "error unpacking public key\n");
+         goto end;
+     }
++    if (sm2id != NULL) {
++#ifndef OPENSSL_NO_SM2
++        ASN1_OCTET_STRING *v;
++
++        v = ASN1_OCTET_STRING_new();
++        if (v == NULL) {
++            BIO_printf(bio_err, "error: SM2 ID allocation failed\n");
++            goto end;
++        }
++
++        if (!ASN1_OCTET_STRING_set(v, sm2id, sm2idlen)) {
++            BIO_printf(bio_err, "error: setting SM2 ID failed\n");
++            ASN1_OCTET_STRING_free(v);
++            goto end;
++        }
++
++        X509_REQ_set0_sm2_id(req, v);
++#endif
++    }
+     i = X509_REQ_verify(req, pktmp);
+     pktmp = NULL;
+     if (i < 0) {
+diff --git a/apps/req.c b/apps/req.c
+index a603907..96f1edd 100644
+--- a/apps/req.c
++++ b/apps/req.c
+@@ -90,7 +90,7 @@ typedef enum OPTION_choice {
+     OPT_VERIFY, OPT_NODES, OPT_NOOUT, OPT_VERBOSE, OPT_UTF8,
+     OPT_NAMEOPT, OPT_REQOPT, OPT_SUBJ, OPT_SUBJECT, OPT_TEXT, OPT_X509,
+     OPT_MULTIVALUE_RDN, OPT_DAYS, OPT_SET_SERIAL, OPT_ADDEXT, OPT_EXTENSIONS,
+-    OPT_REQEXTS, OPT_PRECERT, OPT_MD,
++    OPT_REQEXTS, OPT_PRECERT, OPT_MD, OPT_SM2ID, OPT_SM2HEXID,
+     OPT_R_ENUM
+ } OPTION_CHOICE;
+ 
+@@ -145,6 +145,12 @@ const OPTIONS req_options[] = {
+     {"engine", OPT_ENGINE, 's', "Use engine, possibly a hardware device"},
+     {"keygen_engine", OPT_KEYGEN_ENGINE, 's',
+      "Specify engine to be used for key generation operations"},
++#endif
++#ifndef OPENSSL_NO_SM2
++    {"sm2-id", OPT_SM2ID, 's',
++     "Specify an ID string to verify an SM2 certificate request"},
++    {"sm2-hex-id", OPT_SM2HEXID, 's',
++     "Specify a hex ID string to verify an SM2 certificate request"},
+ #endif
+     {NULL}
+ };
+@@ -242,6 +248,9 @@ int req_main(int argc, char **argv)
+     int nodes = 0, newhdr = 0, subject = 0, pubkey = 0, precert = 0;
+     long newkey = -1;
+     unsigned long chtype = MBSTRING_ASC, reqflag = 0;
++    unsigned char *sm2_id = NULL;
++    size_t sm2_idlen = 0;
++    int sm2_free = 0;
+ 
+ #ifndef OPENSSL_NO_DES
+     cipher = EVP_des_ede3_cbc();
+@@ -417,6 +426,29 @@ int req_main(int argc, char **argv)
+                 goto opthelp;
+             digest = md_alg;
+             break;
++        case OPT_SM2ID:
++            if (sm2_id != NULL) {
++                BIO_printf(bio_err,
++                           "Use one of the options 'sm2-hex-id' or 'sm2-id'\n");
++                goto end;
++            }
++            sm2_id = (unsigned char *)opt_arg();
++            sm2_idlen = strlen((const char *)sm2_id);
++            break;
++        case OPT_SM2HEXID:
++            if (sm2_id != NULL) {
++                BIO_printf(bio_err,
++                           "Use one of the options 'sm2-hex-id' or 'sm2-id'\n");
++                goto end;
++            }
++            /* try to parse the input as hex string first */
++            sm2_free = 1;
++            sm2_id = OPENSSL_hexstr2buf(opt_arg(), (long *)&sm2_idlen);
++            if (sm2_id == NULL) {
++                BIO_printf(bio_err, "Invalid hex string input\n");
++                goto end;
++            }
++            break;
+         }
+     }
+     argc = opt_num_rest();
+@@ -849,6 +881,26 @@ int req_main(int argc, char **argv)
+                 goto end;
+         }
+ 
++        if (sm2_id != NULL) {
++#ifndef OPENSSL_NO_SM2
++            ASN1_OCTET_STRING *v;
++
++            v = ASN1_OCTET_STRING_new();
++            if (v == NULL) {
++                BIO_printf(bio_err, "error: SM2 ID allocation failed\n");
++                goto end;
++            }
++
++            if (!ASN1_OCTET_STRING_set(v, sm2_id, sm2_idlen)) {
++                BIO_printf(bio_err, "error: setting SM2 ID failed\n");
++                ASN1_OCTET_STRING_free(v);
++                goto end;
++            }
++
++            X509_REQ_set0_sm2_id(req, v);
++#endif
++        }
++
+         i = X509_REQ_verify(req, tpubkey);
+ 
+         if (i < 0) {
+@@ -957,6 +1009,8 @@ int req_main(int argc, char **argv)
+     }
+     ret = 0;
+  end:
++    if (sm2_free)
++        OPENSSL_free(sm2_id);
+     if (ret) {
+         ERR_print_errors(bio_err);
+     }
+@@ -1611,14 +1665,58 @@ static int genpkey_cb(EVP_PKEY_CTX *ctx)
+     return 1;
+ }
+ 
++#ifndef OPENSSL_NO_SM2
++static int ec_pkey_is_sm2(EVP_PKEY *pkey)
++{
++    EC_KEY *eckey = NULL;
++    const EC_GROUP *group = NULL;
++
++    if (EVP_PKEY_id(pkey) == EVP_PKEY_SM2)
++        return 1;
++    if (EVP_PKEY_id(pkey) == EVP_PKEY_EC
++            && (eckey = EVP_PKEY_get0_EC_KEY(pkey)) != NULL
++            && (group = EC_KEY_get0_group(eckey)) != NULL
++            && EC_GROUP_get_curve_name(group) == NID_sm2)
++        return 1;
++    return 0;
++}
++#endif
++
+ static int do_sign_init(EVP_MD_CTX *ctx, EVP_PKEY *pkey,
+                         const EVP_MD *md, STACK_OF(OPENSSL_STRING) *sigopts)
+ {
+     EVP_PKEY_CTX *pkctx = NULL;
+-    int i, def_nid;
++#ifndef OPENSSL_NO_SM2
++    EVP_PKEY_CTX *pctx = NULL;
++#endif
++    int i, def_nid, ret = 0;
+ 
+     if (ctx == NULL)
+-        return 0;
++        goto err;
++#ifndef OPENSSL_NO_SM2
++    if (ec_pkey_is_sm2(pkey)) {
++        /* initialize some SM2-specific code */
++        if (!EVP_PKEY_set_alias_type(pkey, EVP_PKEY_SM2)) {
++            BIO_printf(bio_err, "Internal error.\n");
++            goto err;
++        }
++        pctx = EVP_PKEY_CTX_new(pkey, NULL);
++        if (pctx == NULL) {
++            BIO_printf(bio_err, "memory allocation failure.\n");
++            goto err;
++        }
++        /* set SM2 ID from sig options before calling the real init routine */
++        for (i = 0; i < sk_OPENSSL_STRING_num(sigopts); i++) {
++            char *sigopt = sk_OPENSSL_STRING_value(sigopts, i);
++            if (pkey_ctrl_string(pctx, sigopt) <= 0) {
++                BIO_printf(bio_err, "parameter error \"%s\"\n", sigopt);
++                ERR_print_errors(bio_err);
++                goto err;
++            }
++        }
++        EVP_MD_CTX_set_pkey_ctx(ctx, pctx);
++    }
++#endif
+     /*
+      * EVP_PKEY_get_default_digest_nid() returns 2 if the digest is mandatory
+      * for this algorithm.
+@@ -1629,16 +1727,23 @@ static int do_sign_init(EVP_MD_CTX *ctx, EVP_PKEY *pkey,
+         md = NULL;
+     }
+     if (!EVP_DigestSignInit(ctx, &pkctx, md, NULL, pkey))
+-        return 0;
++        goto err;
+     for (i = 0; i < sk_OPENSSL_STRING_num(sigopts); i++) {
+         char *sigopt = sk_OPENSSL_STRING_value(sigopts, i);
+         if (pkey_ctrl_string(pkctx, sigopt) <= 0) {
+             BIO_printf(bio_err, "parameter error \"%s\"\n", sigopt);
+             ERR_print_errors(bio_err);
+-            return 0;
++            goto err;
+         }
+     }
+-    return 1;
++
++    ret = 1;
++ err:
++#ifndef OPENSSL_NO_SM2
++    if (!ret)
++        EVP_PKEY_CTX_free(pctx);
++#endif
++    return ret;
+ }
+ 
+ int do_X509_sign(X509 *x, EVP_PKEY *pkey, const EVP_MD *md,
+@@ -1646,10 +1751,20 @@ int do_X509_sign(X509 *x, EVP_PKEY *pkey, const EVP_MD *md,
+ {
+     int rv;
+     EVP_MD_CTX *mctx = EVP_MD_CTX_new();
++#ifndef OPENSSL_NO_SM2
++    EVP_PKEY_CTX *pctx = NULL;
++#endif
+ 
+     rv = do_sign_init(mctx, pkey, md, sigopts);
+     if (rv > 0)
+         rv = X509_sign_ctx(x, mctx);
++#ifndef OPENSSL_NO_SM2
++    /* only in SM2 case we need to free the pctx explicitly */
++    if (ec_pkey_is_sm2(pkey)) {
++        pctx = EVP_MD_CTX_pkey_ctx(mctx);
++        EVP_PKEY_CTX_free(pctx);
++    }
++#endif
+     EVP_MD_CTX_free(mctx);
+     return rv > 0 ? 1 : 0;
+ }
+@@ -1659,9 +1774,20 @@ int do_X509_REQ_sign(X509_REQ *x, EVP_PKEY *pkey, const EVP_MD *md,
+ {
+     int rv;
+     EVP_MD_CTX *mctx = EVP_MD_CTX_new();
++#ifndef OPENSSL_NO_SM2
++    EVP_PKEY_CTX *pctx = NULL;
++#endif
++
+     rv = do_sign_init(mctx, pkey, md, sigopts);
+     if (rv > 0)
+         rv = X509_REQ_sign_ctx(x, mctx);
++#ifndef OPENSSL_NO_SM2
++    /* only in SM2 case we need to free the pctx explicitly */
++    if (ec_pkey_is_sm2(pkey)) {
++        pctx = EVP_MD_CTX_pkey_ctx(mctx);
++        EVP_PKEY_CTX_free(pctx);
++    }
++#endif
+     EVP_MD_CTX_free(mctx);
+     return rv > 0 ? 1 : 0;
+ }
+@@ -1671,9 +1797,20 @@ int do_X509_CRL_sign(X509_CRL *x, EVP_PKEY *pkey, const EVP_MD *md,
+ {
+     int rv;
+     EVP_MD_CTX *mctx = EVP_MD_CTX_new();
++#ifndef OPENSSL_NO_SM2
++    EVP_PKEY_CTX *pctx = NULL;
++#endif
++
+     rv = do_sign_init(mctx, pkey, md, sigopts);
+     if (rv > 0)
+         rv = X509_CRL_sign_ctx(x, mctx);
++#ifndef OPENSSL_NO_SM2
++    /* only in SM2 case we need to free the pctx explicitly */
++    if (ec_pkey_is_sm2(pkey)) {
++        pctx = EVP_MD_CTX_pkey_ctx(mctx);
++        EVP_PKEY_CTX_free(pctx);
++    }
++#endif
+     EVP_MD_CTX_free(mctx);
+     return rv > 0 ? 1 : 0;
+ }
+diff --git a/crypto/asn1/a_sign.c b/crypto/asn1/a_sign.c
+index 72381b6..c29080b 100644
+--- a/crypto/asn1/a_sign.c
++++ b/crypto/asn1/a_sign.c
+@@ -145,7 +145,7 @@ int ASN1_item_sign_ctx(const ASN1_ITEM *it,
+     unsigned char *buf_in = NULL, *buf_out = NULL;
+     size_t inl = 0, outl = 0, outll = 0;
+     int signid, paramtype, buf_len = 0;
+-    int rv;
++    int rv, pkey_id;
+ 
+     type = EVP_MD_CTX_md(ctx);
+     pkey = EVP_PKEY_CTX_get0_pkey(EVP_MD_CTX_pkey_ctx(ctx));
+@@ -184,9 +184,14 @@ int ASN1_item_sign_ctx(const ASN1_ITEM *it,
+             ASN1err(ASN1_F_ASN1_ITEM_SIGN_CTX, ASN1_R_CONTEXT_NOT_INITIALISED);
+             goto err;
+         }
+-        if (!OBJ_find_sigid_by_algs(&signid,
+-                                    EVP_MD_nid(type),
+-                                    pkey->ameth->pkey_id)) {
++
++        pkey_id =
++#ifndef OPENSSL_NO_SM2
++            EVP_PKEY_id(pkey) == NID_sm2 ? NID_sm2 :
++#endif
++        pkey->ameth->pkey_id;
++
++        if (!OBJ_find_sigid_by_algs(&signid, EVP_MD_nid(type), pkey_id)) {
+             ASN1err(ASN1_F_ASN1_ITEM_SIGN_CTX,
+                     ASN1_R_DIGEST_AND_KEY_TYPE_NOT_SUPPORTED);
+             goto err;
+diff --git a/crypto/ec/ec_pmeth.c b/crypto/ec/ec_pmeth.c
+index 77876a0..591f27a 100644
+--- a/crypto/ec/ec_pmeth.c
++++ b/crypto/ec/ec_pmeth.c
+@@ -327,7 +327,8 @@ static int pkey_ec_ctrl(EVP_PKEY_CTX *ctx, int type, int p1, void *p2)
+             EVP_MD_type((const EVP_MD *)p2) != NID_sha3_224 &&
+             EVP_MD_type((const EVP_MD *)p2) != NID_sha3_256 &&
+             EVP_MD_type((const EVP_MD *)p2) != NID_sha3_384 &&
+-            EVP_MD_type((const EVP_MD *)p2) != NID_sha3_512) {
++            EVP_MD_type((const EVP_MD *)p2) != NID_sha3_512 &&
++            EVP_MD_type((const EVP_MD *)p2) != NID_sm3) {
+             ECerr(EC_F_PKEY_EC_CTRL, EC_R_INVALID_DIGEST_TYPE);
+             return 0;
+         }
+diff --git a/crypto/err/openssl.txt b/crypto/err/openssl.txt
+index 5e71e65..b93cace 100644
+--- a/crypto/err/openssl.txt
++++ b/crypto/err/openssl.txt
+@@ -1711,6 +1711,7 @@ X509_F_BUILD_CHAIN:106:build_chain
+ X509_F_BY_FILE_CTRL:101:by_file_ctrl
+ X509_F_CHECK_NAME_CONSTRAINTS:149:check_name_constraints
+ X509_F_CHECK_POLICY:145:check_policy
++X509_F_COMMON_VERIFY_SM2:165:common_verify_sm2
+ X509_F_DANE_I2D:107:dane_i2d
+ X509_F_DIR_CTRL:102:dir_ctrl
+ X509_F_GET_CERT_BY_SUBJECT:103:get_cert_by_subject
+@@ -1755,6 +1756,8 @@ X509_F_X509_REQ_CHECK_PRIVATE_KEY:144:X509_REQ_check_private_key
+ X509_F_X509_REQ_PRINT_EX:121:X509_REQ_print_ex
+ X509_F_X509_REQ_PRINT_FP:122:X509_REQ_print_fp
+ X509_F_X509_REQ_TO_X509:123:X509_REQ_to_X509
++X509_F_X509_REQ_VERIFY:163:X509_REQ_verify
++X509_F_X509_REQ_VERIFY_SM2:164:x509_req_verify_sm2
+ X509_F_X509_STORE_ADD_CERT:124:X509_STORE_add_cert
+ X509_F_X509_STORE_ADD_CRL:125:X509_STORE_add_crl
+ X509_F_X509_STORE_ADD_LOOKUP:157:X509_STORE_add_lookup
+diff --git a/crypto/x509/x509_err.c b/crypto/x509/x509_err.c
+index c91ad7c..f02793b 100644
+--- a/crypto/x509/x509_err.c
++++ b/crypto/x509/x509_err.c
+@@ -20,6 +20,7 @@ static const ERR_STRING_DATA X509_str_functs[] = {
+     {ERR_PACK(ERR_LIB_X509, X509_F_CHECK_NAME_CONSTRAINTS, 0),
+      "check_name_constraints"},
+     {ERR_PACK(ERR_LIB_X509, X509_F_CHECK_POLICY, 0), "check_policy"},
++    {ERR_PACK(ERR_LIB_X509, X509_F_COMMON_VERIFY_SM2, 0), "common_verify_sm2"},
+     {ERR_PACK(ERR_LIB_X509, X509_F_DANE_I2D, 0), "dane_i2d"},
+     {ERR_PACK(ERR_LIB_X509, X509_F_DIR_CTRL, 0), "dir_ctrl"},
+     {ERR_PACK(ERR_LIB_X509, X509_F_GET_CERT_BY_SUBJECT, 0),
+@@ -87,6 +88,9 @@ static const ERR_STRING_DATA X509_str_functs[] = {
+     {ERR_PACK(ERR_LIB_X509, X509_F_X509_REQ_PRINT_EX, 0), "X509_REQ_print_ex"},
+     {ERR_PACK(ERR_LIB_X509, X509_F_X509_REQ_PRINT_FP, 0), "X509_REQ_print_fp"},
+     {ERR_PACK(ERR_LIB_X509, X509_F_X509_REQ_TO_X509, 0), "X509_REQ_to_X509"},
++    {ERR_PACK(ERR_LIB_X509, X509_F_X509_REQ_VERIFY, 0), "X509_REQ_verify"},
++    {ERR_PACK(ERR_LIB_X509, X509_F_X509_REQ_VERIFY_SM2, 0),
++     "x509_req_verify_sm2"},
+     {ERR_PACK(ERR_LIB_X509, X509_F_X509_STORE_ADD_CERT, 0),
+      "X509_STORE_add_cert"},
+     {ERR_PACK(ERR_LIB_X509, X509_F_X509_STORE_ADD_CRL, 0),
+diff --git a/crypto/x509/x_all.c b/crypto/x509/x_all.c
+index 9c8aea5..5c371f5 100644
+--- a/crypto/x509/x_all.c
++++ b/crypto/x509/x_all.c
+@@ -24,86 +24,105 @@
+ # include "crypto/asn1.h"
+ # include "crypto/evp.h"
+ 
+-static int x509_verify_sm2(X509 *x, EVP_PKEY *pkey, int mdnid, int pknid)
++static int common_verify_sm2(void *data, EVP_PKEY *pkey,
++                             int mdnid, int pknid, int req)
+ {
++    X509 *x = NULL;
++    X509_REQ *r = NULL;
+     EVP_MD_CTX *ctx = NULL;
+     unsigned char *buf_in = NULL;
+     int ret = -1, inl = 0;
+     size_t inll = 0;
+     EVP_PKEY_CTX *pctx = NULL;
+     const EVP_MD *type = EVP_get_digestbynid(mdnid);
++    ASN1_BIT_STRING *signature = NULL;
++    ASN1_OCTET_STRING *sm2_id = NULL;
++    ASN1_VALUE *tbv = NULL;
+ 
+     if (type == NULL) {
+-        X509err(X509_F_X509_VERIFY_SM2,
++        X509err(X509_F_COMMON_VERIFY_SM2,
+                 ASN1_R_UNKNOWN_MESSAGE_DIGEST_ALGORITHM);
+         goto err;
+     }
+ 
+     if (pkey == NULL) {
+-        X509err(X509_F_X509_VERIFY_SM2, ERR_R_PASSED_NULL_PARAMETER);
++        X509err(X509_F_COMMON_VERIFY_SM2, ERR_R_PASSED_NULL_PARAMETER);
+         return -1;
+     }
+ 
+-    if (x->signature.type == V_ASN1_BIT_STRING && x->signature.flags & 0x7) {
+-        X509err(X509_F_X509_VERIFY_SM2, ASN1_R_INVALID_BIT_STRING_BITS_LEFT);
++    if (req == 1) {
++        r = (X509_REQ *)data;
++        signature = r->signature;
++        sm2_id = r->sm2_id;
++        tbv = (ASN1_VALUE *)&r->req_info;
++    } else {
++        x = (X509 *)data;
++        signature = &x->signature;
++        sm2_id = x->sm2_id;
++        tbv = (ASN1_VALUE *)&x->cert_info;
++    }
++
++    if (signature->type == V_ASN1_BIT_STRING && signature->flags & 0x7) {
++        X509err(X509_F_COMMON_VERIFY_SM2, ASN1_R_INVALID_BIT_STRING_BITS_LEFT);
+         return -1;
+     }
+ 
+     ctx = EVP_MD_CTX_new();
+     if (ctx == NULL) {
+-        X509err(X509_F_X509_VERIFY_SM2, ERR_R_MALLOC_FAILURE);
++        X509err(X509_F_COMMON_VERIFY_SM2, ERR_R_MALLOC_FAILURE);
+         goto err;
+     }
+ 
+     /* Check public key OID matches public key type */
+     if (EVP_PKEY_type(pknid) != pkey->ameth->pkey_id) {
+-        X509err(X509_F_X509_VERIFY_SM2, ASN1_R_WRONG_PUBLIC_KEY_TYPE);
++        X509err(X509_F_COMMON_VERIFY_SM2, ASN1_R_WRONG_PUBLIC_KEY_TYPE);
+         goto err;
+     }
+ 
+     if (!EVP_PKEY_set_alias_type(pkey, EVP_PKEY_SM2)) {
+-        X509err(X509_F_X509_VERIFY_SM2, ERR_R_EVP_LIB);
++        X509err(X509_F_COMMON_VERIFY_SM2, ERR_R_EVP_LIB);
+         ret = 0;
+         goto err;
+     }
+     pctx = EVP_PKEY_CTX_new(pkey, NULL);
+     if (pctx == NULL) {
+-        X509err(X509_F_X509_VERIFY_SM2, ERR_R_EVP_LIB);
++        X509err(X509_F_COMMON_VERIFY_SM2, ERR_R_EVP_LIB);
+         ret = 0;
+         goto err;
+     }
+     /* NOTE: we tolerate no actual ID, to provide maximum flexibility */
+-    if (x->sm2_id != NULL
+-            && EVP_PKEY_CTX_set1_id(pctx, x->sm2_id->data,
+-                                    x->sm2_id->length) != 1) {
+-        X509err(X509_F_X509_VERIFY_SM2, ERR_R_EVP_LIB);
++    if (sm2_id != NULL
++            && EVP_PKEY_CTX_set1_id(pctx, sm2_id->data, sm2_id->length) != 1) {
++        X509err(X509_F_COMMON_VERIFY_SM2, ERR_R_EVP_LIB);
+         ret = 0;
+         goto err;
+     }
+     EVP_MD_CTX_set_pkey_ctx(ctx, pctx);
+ 
+     if (!EVP_DigestVerifyInit(ctx, NULL, type, NULL, pkey)) {
+-        X509err(X509_F_X509_VERIFY_SM2, ERR_R_EVP_LIB);
++        X509err(X509_F_COMMON_VERIFY_SM2, ERR_R_EVP_LIB);
+         ret = 0;
+         goto err;
+     }
+ 
+-    inl = ASN1_item_i2d((ASN1_VALUE *)&x->cert_info, &buf_in,
++    inl = ASN1_item_i2d(tbv, &buf_in,
++                        req == 1 ?
++                        ASN1_ITEM_rptr(X509_REQ_INFO) :
+                         ASN1_ITEM_rptr(X509_CINF));
+     if (inl <= 0) {
+-        X509err(X509_F_X509_VERIFY_SM2, ERR_R_INTERNAL_ERROR);
++        X509err(X509_F_COMMON_VERIFY_SM2, ERR_R_INTERNAL_ERROR);
+         goto err;
+     }
+     if (buf_in == NULL) {
+-        X509err(X509_F_X509_VERIFY_SM2, ERR_R_MALLOC_FAILURE);
++        X509err(X509_F_COMMON_VERIFY_SM2, ERR_R_MALLOC_FAILURE);
+         goto err;
+     }
+     inll = inl;
+ 
+-    ret = EVP_DigestVerify(ctx, x->signature.data,
+-                           (size_t)x->signature.length, buf_in, inl);
++    ret = EVP_DigestVerify(ctx, signature->data,
++                           (size_t)signature->length, buf_in, inl);
+     if (ret <= 0) {
+-        X509err(X509_F_X509_VERIFY_SM2, ERR_R_EVP_LIB);
++        X509err(X509_F_COMMON_VERIFY_SM2, ERR_R_EVP_LIB);
+         goto err;
+     }
+     ret = 1;
+@@ -113,6 +132,18 @@ static int x509_verify_sm2(X509 *x, EVP_PKEY *pkey, int mdnid, int pknid)
+     EVP_PKEY_CTX_free(pctx);
+     return ret;
+ }
++
++static int x509_verify_sm2(X509 *x, EVP_PKEY *pkey, int mdnid, int pknid)
++{
++    return common_verify_sm2(x, pkey, mdnid, pknid, 0);
++}
++
++static int x509_req_verify_sm2(X509_REQ *x, EVP_PKEY *pkey,
++                               int mdnid, int pknid)
++{
++    return common_verify_sm2(x, pkey, mdnid, pknid, 1);
++}
++
+ #endif
+ 
+ int X509_verify(X509 *a, EVP_PKEY *r)
+@@ -142,6 +173,20 @@ int X509_verify(X509 *a, EVP_PKEY *r)
+ 
+ int X509_REQ_verify(X509_REQ *a, EVP_PKEY *r)
+ {
++#ifndef OPENSSL_NO_SM2
++    int mdnid, pknid;
++
++    /* Convert signature OID into digest and public key OIDs */
++    if (!OBJ_find_sigid_algs(OBJ_obj2nid(a->sig_alg.algorithm),
++                             &mdnid, &pknid)) {
++        X509err(X509_F_X509_REQ_VERIFY, ASN1_R_UNKNOWN_SIGNATURE_ALGORITHM);
++        return 0;
++    }
++
++    if (pknid == NID_sm2)
++        return x509_req_verify_sm2(a, r, mdnid, pknid);
++#endif
++
+     return (ASN1_item_verify(ASN1_ITEM_rptr(X509_REQ_INFO),
+                              &a->sig_alg, a->signature, &a->req_info, r));
+ }
+diff --git a/crypto/x509/x_req.c b/crypto/x509/x_req.c
+index d2b02f6..de4ff2c 100644
+--- a/crypto/x509/x_req.c
++++ b/crypto/x509/x_req.c
+@@ -45,6 +45,29 @@ static int rinf_cb(int operation, ASN1_VALUE **pval, const ASN1_ITEM *it,
+     return 1;
+ }
+ 
++static int req_cb(int operation, ASN1_VALUE **pval, const ASN1_ITEM *it,
++                  void *exarg)
++{
++#ifndef OPENSSL_NO_SM2
++    X509_REQ *ret = (X509_REQ *)*pval;
++
++    switch (operation) {
++    case ASN1_OP_D2I_PRE:
++        ASN1_OCTET_STRING_free(ret->sm2_id);
++        /* fall thru */
++    case ASN1_OP_NEW_POST:
++        ret->sm2_id = NULL;
++        break;
++
++    case ASN1_OP_FREE_POST:
++        ASN1_OCTET_STRING_free(ret->sm2_id);
++        break;
++    }
++#endif
++
++    return 1;
++}
++
+ ASN1_SEQUENCE_enc(X509_REQ_INFO, enc, rinf_cb) = {
+         ASN1_SIMPLE(X509_REQ_INFO, version, ASN1_INTEGER),
+         ASN1_SIMPLE(X509_REQ_INFO, subject, X509_NAME),
+@@ -57,7 +80,7 @@ ASN1_SEQUENCE_enc(X509_REQ_INFO, enc, rinf_cb) = {
+ 
+ IMPLEMENT_ASN1_FUNCTIONS(X509_REQ_INFO)
+ 
+-ASN1_SEQUENCE_ref(X509_REQ, 0) = {
++ASN1_SEQUENCE_ref(X509_REQ, req_cb) = {
+         ASN1_EMBED(X509_REQ, req_info, X509_REQ_INFO),
+         ASN1_EMBED(X509_REQ, sig_alg, X509_ALGOR),
+         ASN1_SIMPLE(X509_REQ, signature, ASN1_BIT_STRING)
+@@ -66,3 +89,16 @@ ASN1_SEQUENCE_ref(X509_REQ, 0) = {
+ IMPLEMENT_ASN1_FUNCTIONS(X509_REQ)
+ 
+ IMPLEMENT_ASN1_DUP_FUNCTION(X509_REQ)
++
++#ifndef OPENSSL_NO_SM2
++void X509_REQ_set0_sm2_id(X509_REQ *x, ASN1_OCTET_STRING *sm2_id)
++{
++    ASN1_OCTET_STRING_free(x->sm2_id);
++    x->sm2_id = sm2_id;
++}
++
++ASN1_OCTET_STRING *X509_REQ_get0_sm2_id(X509_REQ *x)
++{
++    return x->sm2_id;
++}
++#endif
+diff --git a/crypto/x509/x_x509.c b/crypto/x509/x_x509.c
+index fb03bb2..8c27265 100644
+--- a/crypto/x509/x_x509.c
++++ b/crypto/x509/x_x509.c
+@@ -53,6 +53,9 @@ static int x509_cb(int operation, ASN1_VALUE **pval, const ASN1_ITEM *it,
+         sk_IPAddressFamily_pop_free(ret->rfc3779_addr, IPAddressFamily_free);
+         ASIdentifiers_free(ret->rfc3779_asid);
+ #endif
++#ifndef OPENSSL_NO_SM2
++        ASN1_OCTET_STRING_free(ret->sm2_id);
++#endif
+ 
+         /* fall thru */
+ 
+diff --git a/doc/man1/ca.pod b/doc/man1/ca.pod
+index 4380d86..1a6c53e 100644
+--- a/doc/man1/ca.pod
++++ b/doc/man1/ca.pod
+@@ -57,6 +57,8 @@ B<openssl> B<ca>
+ [B<-multivalue-rdn>]
+ [B<-rand file...>]
+ [B<-writerand file>]
++[B<-sm2-id string>]
++[B<-sm2-hex-id hex-string>]
+ 
+ =head1 DESCRIPTION
+ 
+@@ -303,6 +305,16 @@ all others.
+ Writes random data to the specified I<file> upon exit.
+ This can be used with a subsequent B<-rand> flag.
+ 
++=item B<-sm2-id>
++
++Specify the ID string to use when verifying an SM2 certificate. The ID string is
++required by the SM2 signature algorithm for signing and verification.
++
++=item B<-sm2-hex-id>
++
++Specify a binary ID string to use when signing or verifying using an SM2
++certificate. The argument for this option is string of hexadecimal digits.
++
+ =back
+ 
+ =head1 CRL OPTIONS
+@@ -600,6 +612,10 @@ Sign a certificate request:
+ 
+  openssl ca -in req.pem -out newcert.pem
+ 
++Sign an SM2 certificate request:
++
++ openssl ca -in sm2.csr -out sm2.crt -md sm3 -sigopt "sm2_id:1234567812345678" -sm2-id "1234567812345678"
++
+ Sign a certificate request, using CA extensions:
+ 
+  openssl ca -in req.pem -extensions v3_ca -out newcert.pem
+diff --git a/doc/man1/req.pod b/doc/man1/req.pod
+index 539b843..3b9fcc3 100644
+--- a/doc/man1/req.pod
++++ b/doc/man1/req.pod
+@@ -50,6 +50,8 @@ B<openssl> B<req>
+ [B<-batch>]
+ [B<-verbose>]
+ [B<-engine id>]
++[B<-sm2-id string>]
++[B<-sm2-hex-id hex-string>]
+ 
+ =head1 DESCRIPTION
+ 
+@@ -339,6 +341,16 @@ for all available algorithms.
+ Specifies an engine (by its unique B<id> string) which would be used
+ for key generation operations.
+ 
++=item B<-sm2-id>
++
++Specify the ID string to use when verifying an SM2 certificate. The ID string is
++required by the SM2 signature algorithm for signing and verification.
++
++=item B<-sm2-hex-id>
++
++Specify a binary ID string to use when signing or verifying using an SM2
++certificate. The argument for this option is string of hexadecimal digits.
++
+ =back
+ 
+ =head1 CONFIGURATION FILE FORMAT
+@@ -534,6 +546,15 @@ Generate a self signed root certificate:
+ 
+  openssl req -x509 -newkey rsa:2048 -keyout key.pem -out req.pem
+ 
++Create an SM2 private key and then generate a certificate request from it:
++
++ openssl ecparam -genkey -name SM2 -out sm2.key
++ openssl req -new -key sm2.key -out sm2.csr -sm3 -sigopt "sm2_id:1234567812345678"
++
++Examine and verify an SM2 certificate request:
++
++ openssl req -verify -in sm2.csr -sm3 -sm2-id 1234567812345678
++
+ Example of a file pointed to by the B<oid_file> option:
+ 
+  1.2.3.4        shortName       A longer Name
+diff --git a/doc/man3/X509_get0_sm2_id.pod b/doc/man3/X509_get0_sm2_id.pod
+index 9698c86..d8a85d7 100644
+--- a/doc/man3/X509_get0_sm2_id.pod
++++ b/doc/man3/X509_get0_sm2_id.pod
+@@ -2,7 +2,9 @@
+ 
+ =head1 NAME
+ 
+-X509_get0_sm2_id, X509_set0_sm2_id - get or set SM2 ID for certificate operations
++X509_get0_sm2_id, X509_set0_sm2_id,
++X509_REQ_get0_sm2_id, X509_REQ_set0_sm2_id
++- get or set SM2 ID for certificate operations
+ 
+ =head1 SYNOPSIS
+ 
+@@ -10,6 +12,8 @@ X509_get0_sm2_id, X509_set0_sm2_id - get or set SM2 ID for certificate operation
+ 
+  ASN1_OCTET_STRING *X509_get0_sm2_id(X509 *x);
+  void X509_set0_sm2_id(X509 *x, ASN1_OCTET_STRING *sm2_id);
++ ASN1_OCTET_STRING *X509_REQ_get0_sm2_id(X509_REQ *x);
++ void X509_REQ_set0_sm2_id(X509_REQ *x, ASN1_OCTET_STRING *sm2_id);
+ 
+ =head1 DESCRIPTION
+ 
+@@ -21,6 +25,10 @@ this function transfers the memory management of the value to the X509 object,
+ and therefore the value that has been passed in should not be freed by the
+ caller after this function has been called.
+ 
++X509_REQ_get0_sm2_id() and X509_REQ_set0_sm2_id() have the same functionality
++as X509_get0_sm2_id() and X509_set0_sm2_id() except that they deal with
++B<X509_REQ> objects instead of B<X509>.
++
+ =head1 NOTES
+ 
+ SM2 signature algorithm requires an ID value when generating and verifying a
+@@ -29,7 +37,7 @@ ability to set and retrieve the SM2 ID value.
+ 
+ =head1 RETURN VALUES
+ 
+-X509_set0_sm2_id() does not return a value.
++X509_set0_sm2_id() and X509_REQ_set0_sm2_id() do not return a value.
+ 
+ =head1 SEE ALSO
+ 
+diff --git a/include/crypto/x509.h b/include/crypto/x509.h
+index 5c314a8..a6e812a 100644
+--- a/include/crypto/x509.h
++++ b/include/crypto/x509.h
+@@ -73,6 +73,9 @@ struct X509_req_st {
+     ASN1_BIT_STRING *signature; /* signature */
+     CRYPTO_REF_COUNT references;
+     CRYPTO_RWLOCK *lock;
++# ifndef OPENSSL_NO_SM2
++    ASN1_OCTET_STRING *sm2_id;
++# endif
+ };
+ 
+ struct X509_crl_info_st {
+diff --git a/include/openssl/x509.h b/include/openssl/x509.h
+index a02cf50..42e9eee 100644
+--- a/include/openssl/x509.h
++++ b/include/openssl/x509.h
+@@ -576,6 +576,8 @@ int X509_get_signature_nid(const X509 *x);
+ # ifndef OPENSSL_NO_SM2
+ void X509_set0_sm2_id(X509 *x, ASN1_OCTET_STRING *sm2_id);
+ ASN1_OCTET_STRING *X509_get0_sm2_id(X509 *x);
++void X509_REQ_set0_sm2_id(X509_REQ *x, ASN1_OCTET_STRING *sm2_id);
++ASN1_OCTET_STRING *X509_REQ_get0_sm2_id(X509_REQ *x);
+ # endif
+ 
+ int X509_trusted(const X509 *x);
+diff --git a/include/openssl/x509err.h b/include/openssl/x509err.h
+index 06d75f0..0a84ef0 100644
+--- a/include/openssl/x509err.h
++++ b/include/openssl/x509err.h
+@@ -26,6 +26,7 @@ int ERR_load_X509_strings(void);
+ # define X509_F_BY_FILE_CTRL                              101
+ # define X509_F_CHECK_NAME_CONSTRAINTS                    149
+ # define X509_F_CHECK_POLICY                              145
++# define X509_F_COMMON_VERIFY_SM2                         165
+ # define X509_F_DANE_I2D                                  107
+ # define X509_F_DIR_CTRL                                  102
+ # define X509_F_GET_CERT_BY_SUBJECT                       103
+@@ -70,6 +71,8 @@ int ERR_load_X509_strings(void);
+ # define X509_F_X509_REQ_PRINT_EX                         121
+ # define X509_F_X509_REQ_PRINT_FP                         122
+ # define X509_F_X509_REQ_TO_X509                          123
++# define X509_F_X509_REQ_VERIFY                           163
++# define X509_F_X509_REQ_VERIFY_SM2                       164
+ # define X509_F_X509_STORE_ADD_CERT                       124
+ # define X509_F_X509_STORE_ADD_CRL                        125
+ # define X509_F_X509_STORE_ADD_LOOKUP                     157
+diff --git a/test/certs/sm2-csr.pem b/test/certs/sm2-csr.pem
+new file mode 100644
+index 0000000..a6dcca8
+--- /dev/null
++++ b/test/certs/sm2-csr.pem
+@@ -0,0 +1,9 @@
++-----BEGIN CERTIFICATE REQUEST-----
++MIIBMTCB1wIBADB1MQswCQYDVQQGEwJDTjERMA8GA1UECAwITGlhb25pbmcxETAP
++BgNVBAcMCFNoZW55YW5nMQwwCgYDVQQKDANUZXQxDDAKBgNVBAsMA1RldDELMAkG
++A1UEAwwCb28xFzAVBgkqhkiG9w0BCQEWCG9vQG9vLm9vMFkwEwYHKoZIzj0CAQYI
++KoEcz1UBgi0DQgAE1NjdOpldcjTkuZpdGDNyHAnhK9cB2RZ7jAmFzt7jgEs9OHSg
++rb3crjz+qGZfqyJ5AyZulQ7gdARzb1H55jvw5qAAMAoGCCqBHM9VAYN1A0kAMEYC
++IQCacUXA8kyTTDwEm89Yz9qjsbfd8/N32lnzKxuKCcXJwQIhAIpugCbfeWuPxUQO
++7AvQS3yxBp1yn0FbTT2XVSyYy6To
++-----END CERTIFICATE REQUEST-----
+diff --git a/test/certs/sm2-root.crt b/test/certs/sm2-root.crt
+new file mode 100644
+index 0000000..5677ac6
+--- /dev/null
++++ b/test/certs/sm2-root.crt
+@@ -0,0 +1,14 @@
++-----BEGIN CERTIFICATE-----
++MIICJDCCAcqgAwIBAgIJAOlkpDpSrmVbMAoGCCqBHM9VAYN1MGgxCzAJBgNVBAYT
++AkNOMQswCQYDVQQIDAJMTjERMA8GA1UEBwwIU2hlbnlhbmcxETAPBgNVBAoMCFRl
++c3QgT3JnMRAwDgYDVQQLDAdUZXN0IE9VMRQwEgYDVQQDDAtUZXN0IFNNMiBDQTAe
++Fw0xOTAyMTkwNzA1NDhaFw0yMzAzMzAwNzA1NDhaMGgxCzAJBgNVBAYTAkNOMQsw
++CQYDVQQIDAJMTjERMA8GA1UEBwwIU2hlbnlhbmcxETAPBgNVBAoMCFRlc3QgT3Jn
++MRAwDgYDVQQLDAdUZXN0IE9VMRQwEgYDVQQDDAtUZXN0IFNNMiBDQTBZMBMGByqG
++SM49AgEGCCqBHM9VAYItA0IABHRYnqErofBdXPptvvO7+BSVJxcpHuTGnZ+UPrbU
++5kVEUMaUnNOeMJZl/vRGimZCm/AkReJmRfnb15ESHR+ssp6jXTBbMB0GA1UdDgQW
++BBTFjcWu/zJgSZ5SKUlU5Vx4/0W5dDAfBgNVHSMEGDAWgBTFjcWu/zJgSZ5SKUlU
++5Vx4/0W5dDAMBgNVHRMEBTADAQH/MAsGA1UdDwQEAwIBBjAKBggqgRzPVQGDdQNI
++ADBFAiEAs6byi1nSQtFELOw/2tQIv5AEsZFR5MJ/oB2ztXzs2LYCIEfIw4xlUH6X
++YFhs4RnIa0K9Ng1ebsGPrifYkudwBIk3
++-----END CERTIFICATE-----
+diff --git a/test/certs/sm2-root.key b/test/certs/sm2-root.key
+new file mode 100644
+index 0000000..4bda65b
+--- /dev/null
++++ b/test/certs/sm2-root.key
+@@ -0,0 +1,5 @@
++-----BEGIN PRIVATE KEY-----
++MIGHAgEAMBMGByqGSM49AgEGCCqBHM9VAYItBG0wawIBAQQglktdVbLA5tyXMc+9
++KV4ikyDaFZNnXqfNAzUVqTlqn8GhRANCAAR0WJ6hK6HwXVz6bb7zu/gUlScXKR7k
++xp2flD621OZFRFDGlJzTnjCWZf70RopmQpvwJEXiZkX529eREh0frLKe
++-----END PRIVATE KEY-----
+diff --git a/test/recipes/25-test_req.t b/test/recipes/25-test_req.t
+index 383120c..8289959 100644
+--- a/test/recipes/25-test_req.t
++++ b/test/recipes/25-test_req.t
+@@ -15,7 +15,7 @@ use OpenSSL::Test qw/:DEFAULT srctop_file/;
+ 
+ setup("test_req");
+ 
+-plan tests => 14;
++plan tests => 15;
+ 
+ require_ok(srctop_file('test','recipes','tconversion.pl'));
+ 
+@@ -181,6 +181,25 @@ subtest "generating certificate requests" => sub {
+        "Verifying signature on request");
+ };
+ 
++subtest "generating SM2 certificate requests" => sub {
++    plan tests => 2;
++
++    SKIP: {
++        skip "SM2 is not supported by this OpenSSL build", 2
++        if disabled("sm2");
++        ok(run(app(["openssl", "req", "-config", srctop_file("test", "test.cnf"),
++                    "-new", "-key", srctop_file("test", "certs", "sm2.key"),
++                    "-sigopt", "sm2_id:1234567812345678",
++                    "-out", "testreq.pem", "-sm3"])),
++           "Generating SM2 certificate request");
++
++        ok(run(app(["openssl", "req", "-config", srctop_file("test", "test.cnf"),
++                    "-verify", "-in", "testreq.pem", "-noout",
++                    "-sm2-id", "1234567812345678", "-sm3"])),
++           "Verifying signature on SM2 certificate request");
++    }
++};
++
+ my @openssl_args = ("req", "-config", srctop_file("apps", "openssl.cnf"));
+ 
+ run_conversion('req conversions',
+diff --git a/test/recipes/70-test_verify_extra.t b/test/recipes/70-test_verify_extra.t
+index 8c7c957..1571115 100644
+--- a/test/recipes/70-test_verify_extra.t
++++ b/test/recipes/70-test_verify_extra.t
+@@ -17,4 +17,5 @@ ok(run(test(["verify_extra_test",
+              srctop_file("test", "certs", "roots.pem"),
+              srctop_file("test", "certs", "untrusted.pem"),
+              srctop_file("test", "certs", "bad.pem"),
+-             srctop_file("test", "certs", "rootCA.pem")])));
++             srctop_file("test", "certs", "rootCA.pem"),
++             srctop_file("test", "certs", "sm2-csr.pem")])));
+diff --git a/test/recipes/80-test_ca.t b/test/recipes/80-test_ca.t
+index 557777e..92557cf 100644
+--- a/test/recipes/80-test_ca.t
++++ b/test/recipes/80-test_ca.t
+@@ -23,7 +23,7 @@ my $std_openssl_cnf =
+ 
+ rmtree("demoCA", { safe => 0 });
+ 
+-plan tests => 5;
++plan tests => 6;
+  SKIP: {
+      $ENV{OPENSSL_CONFIG} = '-config "'.srctop_file("test", "CAss.cnf").'"';
+      skip "failed creating CA structure", 4
+@@ -51,9 +51,25 @@ plan tests => 5;
+         'creating new pre-certificate');
+ }
+ 
++SKIP: {
++    skip "SM2 is not supported by this OpenSSL build", 1
++	      if disabled("sm2");
++
++    is(yes(cmdstr(app(["openssl", "ca", "-config",
++                       srctop_file("test", "CAss.cnf"),
++                       "-in", srctop_file("test", "certs", "sm2-csr.pem"),
++                       "-out", "sm2-test.crt",
++                       "-sigopt", "sm2_id:1234567812345678",
++                       "-sm2-id", "1234567812345678",
++                       "-md", "sm3",
++                       "-cert", srctop_file("test", "certs", "sm2-root.crt"),
++                       "-keyfile", srctop_file("test", "certs", "sm2-root.key")]))),
++       0,
++       "Signing SM2 certificate request");
++}
+ 
+ rmtree("demoCA", { safe => 0 });
+-unlink "newcert.pem", "newreq.pem", "newkey.pem";
++unlink "newcert.pem", "newreq.pem", "newkey.pem", "sm2-test.crt";
+ 
+ 
+ sub yes {
+diff --git a/test/verify_extra_test.c b/test/verify_extra_test.c
+index 763ea4f..d69653c 100644
+--- a/test/verify_extra_test.c
++++ b/test/verify_extra_test.c
+@@ -20,6 +20,7 @@ static const char *roots_f;
+ static const char *untrusted_f;
+ static const char *bad_f;
+ static const char *good_f;
++static const char *req_f;
+ 
+ static X509 *load_cert_pem(const char *file)
+ {
+@@ -272,6 +273,46 @@ static int test_sm2_id(void)
+     BIO_free(bio);
+     return ret;
+ }
++
++static int test_req_sm2_id(void)
++{
++    /* we only need an X509_REQ structure, no matter if it's a real SM2 cert */
++    X509_REQ *x = NULL;
++    BIO *bio = NULL;
++    int ret = 0;
++    ASN1_OCTET_STRING *v = NULL, *v2 = NULL;
++    char *sm2id = "this is an ID";
++
++    bio = BIO_new_file(req_f, "r");
++    if (bio == NULL)
++        goto err;
++
++    x = PEM_read_bio_X509_REQ(bio, NULL, 0, NULL);
++    if (x == NULL)
++        goto err;
++
++    v = ASN1_OCTET_STRING_new();
++    if (v == NULL)
++        goto err;
++
++    if (!ASN1_OCTET_STRING_set(v, (unsigned char *)sm2id, (int)strlen(sm2id))) {
++        ASN1_OCTET_STRING_free(v);
++        goto err;
++    }
++
++    X509_REQ_set0_sm2_id(x, v);
++
++    v2 = X509_REQ_get0_sm2_id(x);
++    if (!TEST_ptr(v2)
++            || !TEST_int_eq(ASN1_OCTET_STRING_cmp(v, v2), 0))
++        goto err;
++
++    ret = 1;
++ err:
++    X509_REQ_free(x);
++    BIO_free(bio);
++    return ret;
++}
+ #endif
+ 
+ int setup_tests(void)
+@@ -279,7 +320,8 @@ int setup_tests(void)
+     if (!TEST_ptr(roots_f = test_get_argument(0))
+             || !TEST_ptr(untrusted_f = test_get_argument(1))
+             || !TEST_ptr(bad_f = test_get_argument(2))
+-            || !TEST_ptr(good_f = test_get_argument(3))) {
++            || !TEST_ptr(good_f = test_get_argument(3))
++            || !TEST_ptr(req_f = test_get_argument(4))) {
+         TEST_error("usage: verify_extra_test roots.pem untrusted.pem bad.pem good.pem\n");
+         return 0;
+     }
+@@ -290,6 +332,7 @@ int setup_tests(void)
+     ADD_TEST(test_self_signed_bad);
+ #ifndef OPENSSL_NO_SM2
+     ADD_TEST(test_sm2_id);
++    ADD_TEST(test_req_sm2_id);
+ #endif
+     return 1;
+ }
+diff --git a/util/libcrypto.num b/util/libcrypto.num
+index d7abe91..81a6388 100644
+--- a/util/libcrypto.num
++++ b/util/libcrypto.num
+@@ -4628,3 +4628,5 @@ FIPS_drbg_get_blocklength               6381	1_1_0g	EXIST::FUNCTION:
+ FIPS_drbg_init                          6382	1_1_0g	EXIST::FUNCTION:
+ X509_set0_sm2_id                        6383	1_1_1m	EXIST::FUNCTION:SM2
+ X509_get0_sm2_id                        6384	1_1_1m	EXIST::FUNCTION:SM2
++X509_REQ_get0_sm2_id                    6385	1_1_1m	EXIST::FUNCTION:SM2
++X509_REQ_set0_sm2_id                    6386	1_1_1m	EXIST::FUNCTION:SM2
+-- 
+2.20.1 (Apple Git-117)
+

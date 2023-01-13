@@ -1,0 +1,482 @@
+From b14bf717ccb166cce13173a817106effb02f6c2e Mon Sep 17 00:00:00 2001
+From: Paul Yang <yang.yang@baishancloud.com>
+Date: Wed, 16 Jan 2019 16:16:28 +0800
+Subject: [PATCH 01/15] Support raw input data in apps/pkeyutl
+
+Some signature algorithms require special treatment for digesting, such
+as SM2. This patch adds the ability of handling raw input data in
+apps/pkeyutl other than accepting only pre-hashed input data.
+
+Beside, SM2 requries an ID string when signing or verifying a piece of data,
+this patch also adds the ability for apps/pkeyutil to specify that ID
+string.
+
+Reviewed-by: Matt Caswell <matt@openssl.org>
+(Merged from https://github.com/openssl/openssl/pull/8186)
+---
+ apps/pkeyutl.c                 | 168 +++++++++++++++++++++++++++++----
+ crypto/sm2/sm2_pmeth.c         |   3 +
+ doc/man1/pkeyutl.pod           |  45 +++++++++
+ test/certs/sm2.crt             |  13 +++
+ test/certs/sm2.key             |   5 +
+ test/recipes/20-test_pkeyutl.t |  43 +++++++++
+ 6 files changed, 260 insertions(+), 17 deletions(-)
+ create mode 100644 test/certs/sm2.crt
+ create mode 100644 test/certs/sm2.key
+ create mode 100644 test/recipes/20-test_pkeyutl.t
+
+diff --git a/apps/pkeyutl.c b/apps/pkeyutl.c
+index 831e14d..bca0464 100644
+--- a/apps/pkeyutl.c
++++ b/apps/pkeyutl.c
+@@ -22,7 +22,7 @@
+ static EVP_PKEY_CTX *init_ctx(const char *kdfalg, int *pkeysize,
+                               const char *keyfile, int keyform, int key_type,
+                               char *passinarg, int pkey_op, ENGINE *e,
+-                              const int impl);
++                              const int impl, EVP_PKEY **ppkey);
+ 
+ static int setup_peer(EVP_PKEY_CTX *ctx, int peerform, const char *file,
+                       ENGINE *e);
+@@ -31,6 +31,11 @@ static int do_keyop(EVP_PKEY_CTX *ctx, int pkey_op,
+                     unsigned char *out, size_t *poutlen,
+                     const unsigned char *in, size_t inlen);
+ 
++static int do_raw_keyop(int pkey_op, EVP_PKEY_CTX *ctx,
++                        const EVP_MD *md, EVP_PKEY *pkey, BIO *in,
++                        unsigned char *sig, int siglen,
++                        unsigned char **out, size_t *poutlen);
++
+ typedef enum OPTION_choice {
+     OPT_ERR = -1, OPT_EOF = 0, OPT_HELP,
+     OPT_ENGINE, OPT_ENGINE_IMPL, OPT_IN, OPT_OUT,
+@@ -38,12 +43,15 @@ typedef enum OPTION_choice {
+     OPT_VERIFY, OPT_VERIFYRECOVER, OPT_REV, OPT_ENCRYPT, OPT_DECRYPT,
+     OPT_DERIVE, OPT_SIGFILE, OPT_INKEY, OPT_PEERKEY, OPT_PASSIN,
+     OPT_PEERFORM, OPT_KEYFORM, OPT_PKEYOPT, OPT_KDF, OPT_KDFLEN,
+-    OPT_R_ENUM
++    OPT_R_ENUM, OPT_RAWIN, OPT_DIGEST
+ } OPTION_CHOICE;
+ 
+ const OPTIONS pkeyutl_options[] = {
+     {"help", OPT_HELP, '-', "Display this summary"},
+     {"in", OPT_IN, '<', "Input file - default stdin"},
++    {"rawin", OPT_RAWIN, '-', "Indicate the input data is in raw form"},
++    {"digest", OPT_DIGEST, 's',
++     "Specify the digest algorithm when signing the raw input data"},
+     {"out", OPT_OUT, '>', "Output file - default stdout"},
+     {"pubin", OPT_PUBIN, '-', "Input is a public key"},
+     {"certin", OPT_CERTIN, '-', "Input is a cert with a public key"},
+@@ -80,6 +88,7 @@ int pkeyutl_main(int argc, char **argv)
+     BIO *in = NULL, *out = NULL;
+     ENGINE *e = NULL;
+     EVP_PKEY_CTX *ctx = NULL;
++    EVP_PKEY *pkey = NULL;
+     char *infile = NULL, *outfile = NULL, *sigfile = NULL, *passinarg = NULL;
+     char hexdump = 0, asn1parse = 0, rev = 0, *prog;
+     unsigned char *buf_in = NULL, *buf_out = NULL, *sig = NULL;
+@@ -94,6 +103,8 @@ int pkeyutl_main(int argc, char **argv)
+     const char *kdfalg = NULL;
+     int kdflen = 0;
+     STACK_OF(OPENSSL_STRING) *pkeyopts = NULL;
++    int rawin = 0;
++    const EVP_MD *md = NULL;
+ 
+     prog = opt_init(argc, argv, pkeyutl_options);
+     while ((o = opt_next()) != OPT_EOF) {
+@@ -192,12 +203,39 @@ int pkeyutl_main(int argc, char **argv)
+                 goto end;
+             }
+             break;
++        case OPT_RAWIN:
++            rawin = 1;
++            break;
++        case OPT_DIGEST:
++            if (!opt_md(opt_arg(), &md))
++                goto end;
++            break;
+         }
+     }
+     argc = opt_num_rest();
+     if (argc != 0)
+         goto opthelp;
+ 
++    if (rawin && pkey_op != EVP_PKEY_OP_SIGN && pkey_op != EVP_PKEY_OP_VERIFY) {
++        BIO_printf(bio_err,
++                   "%s: -rawin can only be used with -sign or -verify\n",
++                   prog);
++        goto opthelp;
++    }
++
++    if (md != NULL && !rawin) {
++        BIO_printf(bio_err,
++                   "%s: -digest can only be used with -rawin\n",
++                   prog);
++        goto opthelp;
++    }
++
++    if (rawin && rev) {
++        BIO_printf(bio_err, "%s: -rev cannot be used with raw input\n",
++                   prog);
++        goto opthelp;
++    }
++
+     if (kdfalg != NULL) {
+         if (kdflen == 0) {
+             BIO_printf(bio_err,
+@@ -214,7 +252,7 @@ int pkeyutl_main(int argc, char **argv)
+         goto opthelp;
+     }
+     ctx = init_ctx(kdfalg, &keysize, inkey, keyform, key_type,
+-                   passinarg, pkey_op, e, engine_impl);
++                   passinarg, pkey_op, e, engine_impl, &pkey);
+     if (ctx == NULL) {
+         BIO_printf(bio_err, "%s: Error initializing context\n", prog);
+         ERR_print_errors(bio_err);
+@@ -277,7 +315,8 @@ int pkeyutl_main(int argc, char **argv)
+         }
+     }
+ 
+-    if (in != NULL) {
++    /* Raw input data is handled elsewhere */
++    if (in != NULL && !rawin) {
+         /* Read the input data */
+         buf_inlen = bio_to_mem(&buf_in, keysize * 10, in);
+         if (buf_inlen < 0) {
+@@ -296,8 +335,9 @@ int pkeyutl_main(int argc, char **argv)
+         }
+     }
+ 
+-    /* Sanity check the input */
+-    if (buf_inlen > EVP_MAX_MD_SIZE
++    /* Sanity check the input if the input is not raw */
++    if (!rawin
++            && buf_inlen > EVP_MAX_MD_SIZE
+             && (pkey_op == EVP_PKEY_OP_SIGN
+                 || pkey_op == EVP_PKEY_OP_VERIFY)) {
+         BIO_printf(bio_err,
+@@ -306,8 +346,13 @@ int pkeyutl_main(int argc, char **argv)
+     }
+ 
+     if (pkey_op == EVP_PKEY_OP_VERIFY) {
+-        rv = EVP_PKEY_verify(ctx, sig, (size_t)siglen,
+-                             buf_in, (size_t)buf_inlen);
++        if (rawin) {
++            rv = do_raw_keyop(pkey_op, ctx, md, pkey, in, sig, siglen,
++                              NULL, 0);
++        } else {
++            rv = EVP_PKEY_verify(ctx, sig, (size_t)siglen,
++                                 buf_in, (size_t)buf_inlen);
++        }
+         if (rv == 1) {
+             BIO_puts(out, "Signature Verified Successfully\n");
+             ret = 0;
+@@ -320,14 +365,20 @@ int pkeyutl_main(int argc, char **argv)
+         buf_outlen = kdflen;
+         rv = 1;
+     } else {
+-        rv = do_keyop(ctx, pkey_op, NULL, (size_t *)&buf_outlen,
+-                      buf_in, (size_t)buf_inlen);
+-    }
+-    if (rv > 0 && buf_outlen != 0) {
+-        buf_out = app_malloc(buf_outlen, "buffer output");
+-        rv = do_keyop(ctx, pkey_op,
+-                      buf_out, (size_t *)&buf_outlen,
+-                      buf_in, (size_t)buf_inlen);
++        if (rawin) {
++            /* rawin allocates the buffer in do_raw_keyop() */
++            rv = do_raw_keyop(pkey_op, ctx, md, pkey, in, NULL, 0,
++                              &buf_out, (size_t *)&buf_outlen);
++        } else {
++            rv = do_keyop(ctx, pkey_op, NULL, (size_t *)&buf_outlen,
++                          buf_in, (size_t)buf_inlen);
++            if (rv > 0 && buf_outlen != 0) {
++                buf_out = app_malloc(buf_outlen, "buffer output");
++                rv = do_keyop(ctx, pkey_op,
++                              buf_out, (size_t *)&buf_outlen,
++                              buf_in, (size_t)buf_inlen);
++            }
++        }
+     }
+     if (rv <= 0) {
+         if (pkey_op != EVP_PKEY_OP_DERIVE) {
+@@ -364,7 +415,7 @@ int pkeyutl_main(int argc, char **argv)
+ static EVP_PKEY_CTX *init_ctx(const char *kdfalg, int *pkeysize,
+                               const char *keyfile, int keyform, int key_type,
+                               char *passinarg, int pkey_op, ENGINE *e,
+-                              const int engine_impl)
++                              const int engine_impl, EVP_PKEY **ppkey)
+ {
+     EVP_PKEY *pkey = NULL;
+     EVP_PKEY_CTX *ctx = NULL;
+@@ -422,10 +473,25 @@ static EVP_PKEY_CTX *init_ctx(const char *kdfalg, int *pkeysize,
+         }
+         ctx = EVP_PKEY_CTX_new_id(kdfnid, impl);
+     } else {
++        EC_KEY *eckey = NULL;
++        const EC_GROUP *group = NULL;
++        int nid;
++
+         if (pkey == NULL)
+             goto end;
++        /* SM2 needs a special treatment */
++        if (EVP_PKEY_id(pkey) == EVP_PKEY_EC) {
++            if ((eckey = EVP_PKEY_get0_EC_KEY(pkey)) == NULL
++                    || (group = EC_KEY_get0_group(eckey)) == NULL
++                    || (nid = EC_GROUP_get_curve_name(group)) == 0)
++                goto end;
++            if (nid == NID_sm2)
++                EVP_PKEY_set_alias_type(pkey, EVP_PKEY_SM2);
++        }
+         *pkeysize = EVP_PKEY_size(pkey);
+         ctx = EVP_PKEY_CTX_new(pkey, impl);
++        if (ppkey != NULL)
++            *ppkey = pkey;
+         EVP_PKEY_free(pkey);
+     }
+ 
+@@ -522,3 +588,71 @@ static int do_keyop(EVP_PKEY_CTX *ctx, int pkey_op,
+     }
+     return rv;
+ }
++
++#define TBUF_MAXSIZE 2048
++
++static int do_raw_keyop(int pkey_op, EVP_PKEY_CTX *ctx,
++                        const EVP_MD *md, EVP_PKEY *pkey, BIO *in,
++                        unsigned char *sig, int siglen,
++                        unsigned char **out, size_t *poutlen)
++{
++    int rv = 0;
++    EVP_MD_CTX *mctx = NULL;
++    unsigned char tbuf[TBUF_MAXSIZE];
++    int tbuf_len = 0;
++
++    if ((mctx = EVP_MD_CTX_new()) == NULL) {
++        BIO_printf(bio_err, "Error: out of memory\n");
++        return rv;
++    }
++    EVP_MD_CTX_set_pkey_ctx(mctx, ctx);
++
++    switch(pkey_op) {
++    case EVP_PKEY_OP_VERIFY:
++        if (EVP_DigestVerifyInit(mctx, NULL, md, NULL, pkey) != 1)
++            goto end;
++        for (;;) {
++            tbuf_len = BIO_read(in, tbuf, TBUF_MAXSIZE);
++            if (tbuf_len == 0)
++                break;
++            if (tbuf_len < 0) {
++                BIO_printf(bio_err, "Error reading raw input data\n");
++                goto end;
++            }
++            rv = EVP_DigestVerifyUpdate(mctx, tbuf, (size_t)tbuf_len);
++            if (rv != 1) {
++                BIO_printf(bio_err, "Error verifying raw input data\n");
++                goto end;
++            }
++        }
++        rv = EVP_DigestVerifyFinal(mctx, sig, (size_t)siglen);
++        break;
++    case EVP_PKEY_OP_SIGN:
++        if (EVP_DigestSignInit(mctx, NULL, md, NULL, pkey) != 1)
++            goto end;
++        for (;;) {
++            tbuf_len = BIO_read(in, tbuf, TBUF_MAXSIZE);
++            if (tbuf_len == 0)
++                break;
++            if (tbuf_len < 0) {
++                BIO_printf(bio_err, "Error reading raw input data\n");
++                goto end;
++            }
++            rv = EVP_DigestSignUpdate(mctx, tbuf, (size_t)tbuf_len);
++            if (rv != 1) {
++                BIO_printf(bio_err, "Error signing raw input data\n");
++                goto end;
++            }
++        }
++        rv = EVP_DigestSignFinal(mctx, NULL, poutlen);
++        if (rv == 1 && out != NULL) {
++            *out = app_malloc(*poutlen, "buffer output");
++            rv = EVP_DigestSignFinal(mctx, *out, poutlen);
++        }
++        break;
++    }
++
++ end:
++    EVP_MD_CTX_free(mctx);
++    return rv;
++}
+diff --git a/crypto/sm2/sm2_pmeth.c b/crypto/sm2/sm2_pmeth.c
+index 0e722b9..837bdc1 100644
+--- a/crypto/sm2/sm2_pmeth.c
++++ b/crypto/sm2/sm2_pmeth.c
+@@ -252,6 +252,9 @@ static int pkey_sm2_ctrl_str(EVP_PKEY_CTX *ctx,
+         else
+             return -2;
+         return EVP_PKEY_CTX_set_ec_param_enc(ctx, param_enc);
++    } else if (strcmp(type, "sm2_id") == 0) {
++        return pkey_sm2_ctrl(ctx, EVP_PKEY_CTRL_SET1_ID,
++                             (int)strlen(value), (void *)value);
+     }
+ 
+     return -2;
+diff --git a/doc/man1/pkeyutl.pod b/doc/man1/pkeyutl.pod
+index f6fd48d..f0f80af 100644
+--- a/doc/man1/pkeyutl.pod
++++ b/doc/man1/pkeyutl.pod
+@@ -10,6 +10,8 @@ pkeyutl - public key algorithm utility
+ B<openssl> B<pkeyutl>
+ [B<-help>]
+ [B<-in file>]
++[B<-rawin>]
++[B<-digest algorithm>]
+ [B<-out file>]
+ [B<-sigfile file>]
+ [B<-inkey file>]
+@@ -54,6 +56,23 @@ Print out a usage message.
+ This specifies the input filename to read data from or standard input
+ if this option is not specified.
+ 
++=item B<-rawin>
++
++This indicates that the input data is raw data, which is not hashed by any
++message digest algorithm. The user can specify a digest algorithm by using
++the B<-digest> option. This option can only be used with B<-sign> and
++B<-verify>.
++
++=item B<-digest algorithm>
++
++This specifies the digest algorithm which is used to hash the input data before
++signing or verifying it with the input key. This option could be omitted if the
++signature algorithm does not require one (for instance, EdDSA). If this option
++is omitted but the signature algorithm requires one, a default value will be
++used. For signature algorithms like RSA, DSA and ECDSA, SHA-256 will be the
++default digest algorithm. For SM2, it will be SM3. If this option is present,
++then the B<-rawin> option must be also specified to B<pkeyutl>.
++
+ =item B<-out filename>
+ 
+ Specifies the output filename to write to or standard output by
+@@ -296,6 +315,22 @@ the B<-pkeyopt> B<digest> option.
+ The X25519 and X448 algorithms support key derivation only. Currently there are
+ no additional options.
+ 
++=head1 SM2
++
++The SM2 algorithm supports sign, verify, encrypt and decrypt operations. For
++the sign and verify operations, SM2 requires an ID string to be passed in. The
++following B<pkeyopt> value is supported:
++
++=over 4
++
++=item B<sm2_id:string>
++
++This sets the ID string used in SM2 sign or verify operations. While verifying
++an SM2 signature, the ID string must be the same one used when signing the data.
++Otherwise the verification will fail.
++
++=back
++
+ =head1 EXAMPLES
+ 
+ Sign some data using a private key:
+@@ -329,6 +364,16 @@ Decrypt some data using a private key with OAEP padding using SHA256:
+  openssl pkeyutl -decrypt -in file -inkey key.pem -out secret \
+     -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256
+ 
++Sign some data using an L<SM2(7)> private key and a specific ID:
++
++ openssl pkeyutl -sign -in file -inkey sm2.key -out sig -rawin -digest sm3 \
++    -pkeyopt sm2_id:someid
++
++Verify some data using an L<SM2(7)> certificate and a specific ID:
++
++ openssl pkeyutl -verify -certin -in file -inkey sm2.cert -sigfile sig \
++    -rawin -digest sm3 -pkeyopt sm2_id:someid
++
+ =head1 SEE ALSO
+ 
+ L<genpkey(1)>, L<pkey(1)>, L<rsautl(1)>
+diff --git a/test/certs/sm2.crt b/test/certs/sm2.crt
+new file mode 100644
+index 0000000..189abb1
+--- /dev/null
++++ b/test/certs/sm2.crt
+@@ -0,0 +1,13 @@
++-----BEGIN CERTIFICATE-----
++MIIB6DCCAY6gAwIBAgIJAKH2BR6ITHZeMAoGCCqBHM9VAYN1MGgxCzAJBgNVBAYT
++AkNOMQswCQYDVQQIDAJMTjERMA8GA1UEBwwIU2hlbnlhbmcxETAPBgNVBAoMCFRl
++c3QgT3JnMRAwDgYDVQQLDAdUZXN0IE9VMRQwEgYDVQQDDAtUZXN0IFNNMiBDQTAe
++Fw0xOTAyMTkwNzA1NDhaFw0yMzAzMzAwNzA1NDhaMG8xCzAJBgNVBAYTAkNOMQsw
++CQYDVQQIDAJMTjERMA8GA1UEBwwIU2hlbnlhbmcxETAPBgNVBAoMCFRlc3QgT3Jn
++MRAwDgYDVQQLDAdUZXN0IE9VMRswGQYDVQQDDBJUZXN0IFNNMiBTaWduIENlcnQw
++WTATBgcqhkjOPQIBBggqgRzPVQGCLQNCAAQwqeNkWp7fiu1KZnuDkAucpM8piEzE
++TL1ymrcrOBvv8mhNNkeb20asbWgFQI2zOrSM99/sXGn9rM2/usM/MlcaoxowGDAJ
++BgNVHRMEAjAAMAsGA1UdDwQEAwIGwDAKBggqgRzPVQGDdQNIADBFAiEA9edBnAqT
++TNuGIUIvXsj6/nP+AzXA9HGtAIY4nrqW8LkCIHyZzhRTlxYtgfqkDl0OK5QQRCZH
++OZOfmtx613VyzXwc
++-----END CERTIFICATE-----
+diff --git a/test/certs/sm2.key b/test/certs/sm2.key
+new file mode 100644
+index 0000000..1efd364
+--- /dev/null
++++ b/test/certs/sm2.key
+@@ -0,0 +1,5 @@
++-----BEGIN PRIVATE KEY-----
++MIGHAgEAMBMGByqGSM49AgEGCCqBHM9VAYItBG0wawIBAQQgSKhk+4xGyDI+IS2H
++WVfFPDxh1qv5+wtrddaIsGNXGZihRANCAAQwqeNkWp7fiu1KZnuDkAucpM8piEzE
++TL1ymrcrOBvv8mhNNkeb20asbWgFQI2zOrSM99/sXGn9rM2/usM/Mlca
++-----END PRIVATE KEY-----
+diff --git a/test/recipes/20-test_pkeyutl.t b/test/recipes/20-test_pkeyutl.t
+new file mode 100644
+index 0000000..a051138
+--- /dev/null
++++ b/test/recipes/20-test_pkeyutl.t
+@@ -0,0 +1,43 @@
++#! /usr/bin/env perl
++# Copyright 2018 The OpenSSL Project Authors. All Rights Reserved.
++#
++# Licensed under the Apache License 2.0 (the "License").  You may not use
++# this file except in compliance with the License.  You can obtain a copy
++# in the file LICENSE in the source distribution or at
++# https://www.openssl.org/source/license.html
++
++use strict;
++use warnings;
++
++use File::Spec;
++use OpenSSL::Test qw/:DEFAULT srctop_file/;
++use OpenSSL::Test::Utils;
++
++setup("test_pkeyutl");
++
++plan tests => 2;
++
++sub sign
++{
++    # Utilize the sm2.crt as the TBS file
++    return run(app(([ 'openssl', 'pkeyutl', '-sign',
++                      '-in', srctop_file('test', 'certs', 'sm2.crt'),
++                      '-inkey', srctop_file('test', 'certs', 'sm2.key'),
++                      '-out', 'signature.sm2', '-rawin',
++                      '-digest', 'sm3', '-pkeyopt', 'sm2_id:someid'])));
++}
++
++sub verify
++{
++    # Utilize the sm2.crt as the TBS file
++    return run(app(([ 'openssl', 'pkeyutl', '-verify', '-certin',
++                      '-in', srctop_file('test', 'certs', 'sm2.crt'),
++                      '-inkey', srctop_file('test', 'certs', 'sm2.crt'),
++                      '-sigfile', 'signature.sm2', '-rawin',
++                      '-digest', 'sm3', '-pkeyopt', 'sm2_id:someid'])));
++}
++
++ok(sign, "Sign a piece of data using SM2");
++ok(verify, "Verify an SM2 signature against a piece of data");
++
++unlink 'signature.sm2';
+-- 
+2.20.1 (Apple Git-117)
+

@@ -1,0 +1,121 @@
+From a63238684c1d2e15f417f766f44418a8b52ef383 Mon Sep 17 00:00:00 2001
+From: Paul Yang <kaishen.yy@antfin.com>
+Date: Sat, 21 Sep 2019 00:32:57 +0800
+Subject: [PATCH 12/15] Fix a double free issue when signing SM2 cert
+
+If the SM2 ID value has not been passed correctly when signing an SM2
+certificate/certificate request, a double free occurs. For instance:
+
+  openssl req -x509 ... -sm2-id 1234567812345678
+
+The '-sm2-id' should not be used in this scenario, while the '-sigopt' is
+the correct one to use. Documentation has also been updated to make the
+options more clear.
+
+Reviewed-by: Matt Caswell <matt@openssl.org>
+(Merged from https://github.com/openssl/openssl/pull/9958)
+---
+ apps/req.c       | 48 ++++++++++++++++++++++++++++++------------------
+ doc/man1/req.pod |  4 ++--
+ 2 files changed, 32 insertions(+), 20 deletions(-)
+
+diff --git a/apps/req.c b/apps/req.c
+index 96f1edd..95dd0e4 100644
+--- a/apps/req.c
++++ b/apps/req.c
+@@ -1756,15 +1756,19 @@ int do_X509_sign(X509 *x, EVP_PKEY *pkey, const EVP_MD *md,
+ #endif
+ 
+     rv = do_sign_init(mctx, pkey, md, sigopts);
+-    if (rv > 0)
++    if (rv > 0) {
+         rv = X509_sign_ctx(x, mctx);
+ #ifndef OPENSSL_NO_SM2
+-    /* only in SM2 case we need to free the pctx explicitly */
+-    if (ec_pkey_is_sm2(pkey)) {
+-        pctx = EVP_MD_CTX_pkey_ctx(mctx);
+-        EVP_PKEY_CTX_free(pctx);
+-    }
++        /*
++         * only in SM2 case we need to free the pctx explicitly
++         * if do_sign_init() fails, pctx is already freed in it
++         */
++        if (ec_pkey_is_sm2(pkey)) {
++            pctx = EVP_MD_CTX_pkey_ctx(mctx);
++            EVP_PKEY_CTX_free(pctx);
++        }
+ #endif
++    }
+     EVP_MD_CTX_free(mctx);
+     return rv > 0 ? 1 : 0;
+ }
+@@ -1779,15 +1783,19 @@ int do_X509_REQ_sign(X509_REQ *x, EVP_PKEY *pkey, const EVP_MD *md,
+ #endif
+ 
+     rv = do_sign_init(mctx, pkey, md, sigopts);
+-    if (rv > 0)
++    if (rv > 0) {
+         rv = X509_REQ_sign_ctx(x, mctx);
+ #ifndef OPENSSL_NO_SM2
+-    /* only in SM2 case we need to free the pctx explicitly */
+-    if (ec_pkey_is_sm2(pkey)) {
+-        pctx = EVP_MD_CTX_pkey_ctx(mctx);
+-        EVP_PKEY_CTX_free(pctx);
+-    }
++        /*
++         * only in SM2 case we need to free the pctx explicitly
++         * if do_sign_init() fails, pctx is already freed in it
++         */
++        if (ec_pkey_is_sm2(pkey)) {
++            pctx = EVP_MD_CTX_pkey_ctx(mctx);
++            EVP_PKEY_CTX_free(pctx);
++        }
+ #endif
++    }
+     EVP_MD_CTX_free(mctx);
+     return rv > 0 ? 1 : 0;
+ }
+@@ -1802,15 +1810,19 @@ int do_X509_CRL_sign(X509_CRL *x, EVP_PKEY *pkey, const EVP_MD *md,
+ #endif
+ 
+     rv = do_sign_init(mctx, pkey, md, sigopts);
+-    if (rv > 0)
++    if (rv > 0) {
+         rv = X509_CRL_sign_ctx(x, mctx);
+ #ifndef OPENSSL_NO_SM2
+-    /* only in SM2 case we need to free the pctx explicitly */
+-    if (ec_pkey_is_sm2(pkey)) {
+-        pctx = EVP_MD_CTX_pkey_ctx(mctx);
+-        EVP_PKEY_CTX_free(pctx);
+-    }
++        /*
++         * only in SM2 case we need to free the pctx explicitly
++         * if do_sign_init() fails, no need to double free pctx
++         */
++        if (ec_pkey_is_sm2(pkey)) {
++            pctx = EVP_MD_CTX_pkey_ctx(mctx);
++            EVP_PKEY_CTX_free(pctx);
++        }
+ #endif
++    }
+     EVP_MD_CTX_free(mctx);
+     return rv > 0 ? 1 : 0;
+ }
+diff --git a/doc/man1/req.pod b/doc/man1/req.pod
+index 3b9fcc3..7b00bad 100644
+--- a/doc/man1/req.pod
++++ b/doc/man1/req.pod
+@@ -343,8 +343,8 @@ for key generation operations.
+ 
+ =item B<-sm2-id>
+ 
+-Specify the ID string to use when verifying an SM2 certificate. The ID string is
+-required by the SM2 signature algorithm for signing and verification.
++Specify the ID string to use when verifying an SM2 certificate request. The ID
++string is required by the SM2 signature algorithm for signing and verification.
+ 
+ =item B<-sm2-hex-id>
+ 
+-- 
+2.20.1 (Apple Git-117)
+

@@ -1,0 +1,39 @@
+From 91db522f31981b3fafdec4120de1027e8bc4d792 Mon Sep 17 00:00:00 2001
+From: Daniel Fiala <daniel@openssl.org>
+Date: Mon, 18 Apr 2022 11:30:13 +0200
+Subject: [PATCH] x509: use actual issuer name if a CA is used
+
+Fixes openssl#16080.
+
+Reviewed-by: Ben Kaduk <kaduk@mit.edu>
+Reviewed-by: Tomas Mraz <tomas@openssl.org>
+(Merged from https://github.com/openssl/openssl/pull/18129)
+---
+ apps/x509.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/apps/x509.c b/apps/x509.c
+index 1043eba0c8..2329d9b2d4 100644
+--- a/apps/x509.c
++++ b/apps/x509.c
+@@ -590,6 +590,8 @@ int x509_main(int argc, char **argv)
+         xca = load_cert(CAfile, CAformat, "CA Certificate");
+         if (xca == NULL)
+             goto end;
++        if (!X509_set_issuer_name(x, X509_get_subject_name(xca)))
++            goto end;
+     }
+ 
+     out = bio_open_default(outfile, 'w', outformat);
+@@ -987,8 +989,6 @@ static int x509_certify(X509_STORE *ctx, const char *CAfile, const EVP_MD *diges
+         goto end;
+     }
+ 
+-    if (!X509_set_issuer_name(x, X509_get_subject_name(xca)))
+-        goto end;
+     if (!X509_set_serialNumber(x, bs))
+         goto end;
+ 
+-- 
+2.17.1
+

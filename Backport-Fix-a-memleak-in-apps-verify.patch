@@ -1,0 +1,43 @@
+From 1c243548ef736329b08344ad9191803e5a93ec17 Mon Sep 17 00:00:00 2001
+From: Paul Yang <yang.yang@baishancloud.com>
+Date: Wed, 13 Mar 2019 18:04:05 +0800
+Subject: [PATCH 07/15] Fix a memleak in apps/verify
+
+Reviewed-by: Paul Dale <paul.dale@oracle.com>
+(Merged from https://github.com/openssl/openssl/pull/8465)
+---
+ apps/verify.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/apps/verify.c b/apps/verify.c
+index 09b31cf..5052d80 100644
+--- a/apps/verify.c
++++ b/apps/verify.c
+@@ -80,6 +80,7 @@ int verify_main(int argc, char **argv)
+     OPTION_CHOICE o;
+     unsigned char *sm2_id = NULL;
+     size_t sm2_idlen = 0;
++    int sm2_free = 0;
+ 
+     if ((vpm = X509_VERIFY_PARAM_new()) == NULL)
+         goto end;
+@@ -174,6 +175,7 @@ int verify_main(int argc, char **argv)
+             break;
+         case OPT_SM2HEXID:
+             /* try to parse the input as hex string first */
++            sm2_free = 1;
+             sm2_id = OPENSSL_hexstr2buf(opt_arg(), (long *)&sm2_idlen);
+             if (sm2_id == NULL) {
+                 BIO_printf(bio_err, "Invalid hex string input\n");
+@@ -216,6 +218,8 @@ int verify_main(int argc, char **argv)
+     }
+ 
+  end:
++    if (sm2_free)
++        OPENSSL_free(sm2_id);
+     X509_VERIFY_PARAM_free(vpm);
+     X509_STORE_free(store);
+     sk_X509_pop_free(untrusted, X509_free);
+-- 
+2.20.1 (Apple Git-117)
+

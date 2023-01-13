@@ -1,0 +1,145 @@
+From 564a8d442cbd8ce68d452ff2e8a58c0aea6b0632 Mon Sep 17 00:00:00 2001
+From: Bernd Edlinger <bernd.edlinger@hotmail.de>
+Date: Mon, 11 Apr 2022 10:12:48 +0200
+Subject: [PATCH] Fix an assertion in the DTLS server code
+
+This fixes an internal error alert from the server and
+an unexpected connection failure in the release version,
+but a failed assertion and a server crash in the
+debug version.
+
+Reproduce this issue with a DTLS server/client like that:
+
+./openssl s_server -dtls -mtu 1500
+./openssl s_client -dtls -maxfraglen 512
+
+In the debug version a crash happens in the Server now:
+
+./openssl s_server -dtls -mtu 1500
+Using default temp DH parameters
+ACCEPT
+ssl/statem/statem_dtls.c:269: OpenSSL internal error: Assertion failed: len == written
+Aborted (core dumped)
+
+While in the release version the handshake exceeds the
+negotiated max fragment size, and fails because of this:
+
+$ ./openssl s_server -dtls -mtu 1500
+Using default temp DH parameters
+ACCEPT
+ERROR
+4057152ADA7F0000:error:0A0000C2:SSL routines:do_dtls1_write:exceeds max fragment size:ssl/record/rec_layer_d1.c:826:
+shutting down SSL
+CONNECTION CLOSED
+
+From the client's point of view the connection fails
+with an Internal Error Alert:
+
+$ ./openssl s_client -dtls -maxfraglen 512
+Connecting to ::1
+CONNECTED(00000003)
+40B76343377F0000:error:0A000438:SSL routines:dtls1_read_bytes:tlsv1 alert internal error:ssl/record/rec_layer_d1.c:613:SSL alert number 80
+
+and now the connection attempt fails unexpectedly.
+
+Reviewed-by: Tomas Mraz <tomas@openssl.org>
+Reviewed-by: Matt Caswell <matt@openssl.org>
+(Merged from https://github.com/openssl/openssl/pull/18093)
+
+(cherry picked from commit e915c3f5381cd38ebdc1824c3ba9896ea7160103)
+---
+ ssl/statem/statem_dtls.c |  6 ++---
+ test/dtls_mtu_test.c     | 48 +++++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 50 insertions(+), 4 deletions(-)
+
+diff --git a/ssl/statem/statem_dtls.c b/ssl/statem/statem_dtls.c
+index 8e3fb686ee..620367ace4 100644
+--- a/ssl/statem/statem_dtls.c
++++ b/ssl/statem/statem_dtls.c
+@@ -218,8 +218,8 @@ int dtls1_do_write(SSL *s, int type)
+         else
+             len = s->init_num;
+ 
+-        if (len > s->max_send_fragment)
+-            len = s->max_send_fragment;
++        if (len > ssl_get_max_send_fragment(s))
++            len = ssl_get_max_send_fragment(s);
+ 
+         /*
+          * XDTLS: this function is too long.  split out the CCS part
+@@ -241,7 +241,7 @@ int dtls1_do_write(SSL *s, int type)
+ 
+         ret = dtls1_write_bytes(s, type, &s->init_buf->data[s->init_off], len,
+                                 &written);
+-        if (ret < 0) {
++        if (ret <= 0) {
+             /*
+              * might need to update MTU here, but we don't know which
+              * previous packet caused the failure -- so can't really
+diff --git a/test/dtls_mtu_test.c b/test/dtls_mtu_test.c
+index f20edf02d2..9b69e80a62 100644
+--- a/test/dtls_mtu_test.c
++++ b/test/dtls_mtu_test.c
+@@ -185,12 +185,58 @@ static int run_mtu_tests(void)
+ 
+  end:
+     SSL_CTX_free(ctx);
+-    bio_s_mempacket_test_free();
+     return ret;
+ }
+ 
++static int test_server_mtu_larger_than_max_fragment_length(void)
++{
++    SSL_CTX *ctx = NULL;
++    SSL *srvr_ssl = NULL, *clnt_ssl = NULL;
++    int rv = 0;
++
++    if (!TEST_ptr(ctx = SSL_CTX_new(DTLS_method())))
++        goto end;
++
++    SSL_CTX_set_psk_server_callback(ctx, srvr_psk_callback);
++    SSL_CTX_set_psk_client_callback(ctx, clnt_psk_callback);
++
++#ifndef OPENSSL_NO_DH
++    if (!TEST_true(SSL_CTX_set_dh_auto(ctx, 1)))
++        goto end;
++#endif
++
++    if (!TEST_true(create_ssl_objects(ctx, ctx, &srvr_ssl, &clnt_ssl,
++                                      NULL, NULL)))
++        goto end;
++
++    SSL_set_options(srvr_ssl, SSL_OP_NO_QUERY_MTU);
++    if (!TEST_true(DTLS_set_link_mtu(srvr_ssl, 1500)))
++        goto end;
++
++    SSL_set_tlsext_max_fragment_length(clnt_ssl,
++                                       TLSEXT_max_fragment_length_512);
++
++    if (!TEST_true(create_ssl_connection(srvr_ssl, clnt_ssl,
++                                         SSL_ERROR_NONE)))
++        goto end;
++
++    rv = 1;
++
++ end:
++    SSL_free(clnt_ssl);
++    SSL_free(srvr_ssl);
++    SSL_CTX_free(ctx);
++    return rv;
++}
++
+ int setup_tests(void)
+ {
+     ADD_TEST(run_mtu_tests);
++    ADD_TEST(test_server_mtu_larger_than_max_fragment_length);
+     return 1;
+ }
++
++void cleanup_tests(void)
++{
++    bio_s_mempacket_test_free();
++}
+-- 
+2.17.1
+

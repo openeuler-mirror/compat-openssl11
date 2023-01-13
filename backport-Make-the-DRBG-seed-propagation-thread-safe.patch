@@ -1,0 +1,77 @@
+From 17098c116d68b3a01fcb688487dccdc0c10b8f63 Mon Sep 17 00:00:00 2001
+From: Bernd Edlinger <bernd.edlinger@hotmail.de>
+Date: Sat, 23 Oct 2021 11:58:27 +0200
+Subject: [PATCH] Make the DRBG seed propagation thread safe
+
+Currently there is a race possible because the reseed_counter
+of the master drbg may be incremented after the get_entropy call.
+Therefore access the parent's reseed_counter while still holding
+the rand_drbg_lock.
+
+This improves commit 958fec77928a28350f6af252ac5e8d0e6e081faa
+
+Reviewed-by: Paul Dale <pauli@openssl.org>
+Reviewed-by: Tomas Mraz <tomas@openssl.org>
+(Merged from https://github.com/openssl/openssl/pull/16900)
+---
+ crypto/rand/drbg_lib.c | 18 ++++--------------
+ crypto/rand/rand_lib.c |  6 +++++-
+ 2 files changed, 9 insertions(+), 15 deletions(-)
+
+diff --git a/crypto/rand/drbg_lib.c b/crypto/rand/drbg_lib.c
+index 8c7c28c970..0ba20ca326 100644
+--- a/crypto/rand/drbg_lib.c
++++ b/crypto/rand/drbg_lib.c
+@@ -354,13 +354,8 @@ int RAND_DRBG_instantiate(RAND_DRBG *drbg,
+     drbg->state = DRBG_READY;
+     drbg->generate_counter = 1;
+     drbg->reseed_time = time(NULL);
+-    if (drbg->enable_reseed_propagation) {
+-        if (drbg->parent == NULL)
+-            tsan_counter(&drbg->reseed_counter);
+-        else
+-            tsan_store(&drbg->reseed_counter,
+-                       tsan_load(&drbg->parent->reseed_counter));
+-    }
++    if (drbg->enable_reseed_propagation && drbg->parent == NULL)
++        tsan_counter(&drbg->reseed_counter);
+ 
+  end:
+     if (entropy != NULL && drbg->cleanup_entropy != NULL)
+@@ -444,13 +439,8 @@ int RAND_DRBG_reseed(RAND_DRBG *drbg,
+     drbg->state = DRBG_READY;
+     drbg->generate_counter = 1;
+     drbg->reseed_time = time(NULL);
+-    if (drbg->enable_reseed_propagation) {
+-        if (drbg->parent == NULL)
+-            tsan_counter(&drbg->reseed_counter);
+-        else
+-            tsan_store(&drbg->reseed_counter,
+-                       tsan_load(&drbg->parent->reseed_counter));
+-    }
++    if (drbg->enable_reseed_propagation && drbg->parent == NULL)
++        tsan_counter(&drbg->reseed_counter);
+ 
+  end:
+     if (entropy != NULL && drbg->cleanup_entropy != NULL)
+diff --git a/crypto/rand/rand_lib.c b/crypto/rand/rand_lib.c
+index 5c72fad8ca..545ab46315 100644
+--- a/crypto/rand/rand_lib.c
++++ b/crypto/rand/rand_lib.c
+@@ -172,8 +172,12 @@ size_t rand_drbg_get_entropy(RAND_DRBG *drbg,
+             if (RAND_DRBG_generate(drbg->parent,
+                                    buffer, bytes_needed,
+                                    prediction_resistance,
+-                                   (unsigned char *)&drbg, sizeof(drbg)) != 0)
++                                   (unsigned char *)&drbg, sizeof(drbg)) != 0) {
+                 bytes = bytes_needed;
++                if (drbg->enable_reseed_propagation)
++                    tsan_store(&drbg->reseed_counter,
++                               tsan_load(&drbg->parent->reseed_counter));
++            }
+             rand_drbg_unlock(drbg->parent);
+ 
+             rand_pool_add_end(pool, bytes, 8 * bytes);
+-- 
+2.17.1
+

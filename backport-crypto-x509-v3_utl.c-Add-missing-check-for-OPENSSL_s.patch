@@ -1,0 +1,58 @@
+From 999cce6ea7393e1daa40e9994064b2955b24a831 Mon Sep 17 00:00:00 2001
+From: Jiasheng Jiang <jiasheng@iscas.ac.cn>
+Date: Mon, 21 Feb 2022 09:51:54 +0800
+Subject: [PATCH] crypto/x509/v3_utl.c: Add missing check for OPENSSL_strndup
+
+Since the potential failure of memory allocation, it
+should be better to check the return value of the
+OPENSSL_strndup(), like x509v3_add_len_value().
+And following the comment of 'if (astrlen < 0)',
+return -1 if fails.
+
+Signed-off-by: Jiasheng Jiang <jiasheng@iscas.ac.cn>
+
+Reviewed-by: Matt Caswell <matt@openssl.org>
+Reviewed-by: Paul Dale <pauli@openssl.org>
+Reviewed-by: Tomas Mraz <tomas@openssl.org>
+(Merged from https://github.com/openssl/openssl/pull/17737)
+
+(cherry picked from commit 366a16263959c0b6599f0b9ec18124d75560c6ef)
+---
+ crypto/x509v3/v3_utl.c | 12 ++++++++++--
+ 1 file changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/crypto/x509v3/v3_utl.c b/crypto/x509v3/v3_utl.c
+index f41c699b5a..40d8f31554 100644
+--- a/crypto/x509v3/v3_utl.c
++++ b/crypto/x509v3/v3_utl.c
+@@ -828,8 +828,11 @@ static int do_check_string(const ASN1_STRING *a, int cmp_type, equal_fn equal,
+             rv = equal(a->data, a->length, (unsigned char *)b, blen, flags);
+         else if (a->length == (int)blen && !memcmp(a->data, b, blen))
+             rv = 1;
+-        if (rv > 0 && peername)
++        if (rv > 0 && peername != NULL) {
+             *peername = OPENSSL_strndup((char *)a->data, a->length);
++            if (*peername == NULL)
++                return -1;
++        }
+     } else {
+         int astrlen;
+         unsigned char *astr;
+@@ -842,8 +845,13 @@ static int do_check_string(const ASN1_STRING *a, int cmp_type, equal_fn equal,
+             return -1;
+         }
+         rv = equal(astr, astrlen, (unsigned char *)b, blen, flags);
+-        if (rv > 0 && peername)
++        if (rv > 0 && peername != NULL) {
+             *peername = OPENSSL_strndup((char *)astr, astrlen);
++            if (*peername == NULL) {
++                OPENSSL_free(astr);
++                return -1;
++            }
++        }
+         OPENSSL_free(astr);
+     }
+     return rv;
+-- 
+2.17.1
+

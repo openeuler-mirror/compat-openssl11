@@ -1,0 +1,74 @@
+From 59b8eca400d9ea7b77dc98fe08a91bbfe35d025a Mon Sep 17 00:00:00 2001
+From: Bernd Edlinger <bernd.edlinger@hotmail.de>
+Date: Sat, 21 May 2022 15:41:46 +0200
+Subject: [PATCH] Fix a memory leak in X509_issuer_and_serial_hash
+
+This is reproducible with my error injection patch:
+
+$ ERROR_INJECT=1653267699 ../util/shlib_wrap.sh ./x509-test ./corpora/x509/5f4034ae85d6587dcad4da3e812e80f3d312894d
+ERROR_INJECT=1653267699
+    #0 0x7fd485a6ad4f in __sanitizer_print_stack_trace ../../../../src/libsanitizer/asan/asan_stack.cc:36
+    #1 0x55c12d268724 in my_malloc fuzz/test-corpus.c:114
+    #2 0x7fd484f51a75 in CRYPTO_zalloc crypto/mem.c:230
+    #3 0x7fd484ed778d in EVP_DigestInit_ex crypto/evp/digest.c:139
+    #4 0x7fd4850a9849 in X509_issuer_and_serial_hash crypto/x509/x509_cmp.c:44
+    #5 0x55c12d268951 in FuzzerTestOneInput fuzz/x509.c:44
+    #6 0x55c12d268239 in testfile fuzz/test-corpus.c:182
+    #7 0x55c12d267c7f in main fuzz/test-corpus.c:226
+    #8 0x7fd483a42082 in __libc_start_main ../csu/libc-start.c:308
+    #9 0x55c12d267e5d in _start (/home/ed/OPCToolboxV5/Source/Core/OpenSSL/openssl/fuzz/x509-test+0x3e5d)
+
+=================================================================
+==1058475==ERROR: LeakSanitizer: detected memory leaks
+
+Direct leak of 268 byte(s) in 1 object(s) allocated from:
+    #0 0x7fd485a5dc3e in __interceptor_realloc ../../../../src/libsanitizer/asan/asan_malloc_linux.cc:163
+    #1 0x7fd484d2eb9b in BUF_MEM_grow crypto/buffer/buffer.c:97
+    #2 0x7fd4850b2913 in X509_NAME_oneline crypto/x509/x509_obj.c:43
+    #3 0x7fd4850a982f in X509_issuer_and_serial_hash crypto/x509/x509_cmp.c:41
+    #4 0x55c12d268951 in FuzzerTestOneInput fuzz/x509.c:44
+    #5 0x55c12d268239 in testfile fuzz/test-corpus.c:182
+    #6 0x55c12d267c7f in main fuzz/test-corpus.c:226
+    #7 0x7fd483a42082 in __libc_start_main ../csu/libc-start.c:308
+
+SUMMARY: AddressSanitizer: 268 byte(s) leaked in 1 allocation(s).
+
+Reviewed-by: Tomas Mraz <tomas@openssl.org>
+Reviewed-by: Matt Caswell <matt@openssl.org>
+(Merged from https://github.com/openssl/openssl/pull/18370)
+---
+ crypto/x509/x509_cmp.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/crypto/x509/x509_cmp.c b/crypto/x509/x509_cmp.c
+index 1d8d2d7b28..1661cac634 100644
+--- a/crypto/x509/x509_cmp.c
++++ b/crypto/x509/x509_cmp.c
+@@ -34,7 +34,7 @@ unsigned long X509_issuer_and_serial_hash(X509 *a)
+     unsigned long ret = 0;
+     EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+     unsigned char md[16];
+-    char *f;
++    char *f = NULL;
+ 
+     if (ctx == NULL)
+         goto err;
+@@ -45,7 +45,6 @@ unsigned long X509_issuer_and_serial_hash(X509 *a)
+         goto err;
+     if (!EVP_DigestUpdate(ctx, (unsigned char *)f, strlen(f)))
+         goto err;
+-    OPENSSL_free(f);
+     if (!EVP_DigestUpdate
+         (ctx, (unsigned char *)a->cert_info.serialNumber.data,
+          (unsigned long)a->cert_info.serialNumber.length))
+@@ -56,6 +55,7 @@ unsigned long X509_issuer_and_serial_hash(X509 *a)
+            ((unsigned long)md[2] << 16L) | ((unsigned long)md[3] << 24L)
+         ) & 0xffffffffL;
+  err:
++    OPENSSL_free(f);
+     EVP_MD_CTX_free(ctx);
+     return ret;
+ }
+-- 
+2.17.1
+

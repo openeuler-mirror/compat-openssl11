@@ -1,0 +1,36 @@
+From fb67978a9eb076b23ddf17f6b95f697ed526c584 Mon Sep 17 00:00:00 2001
+From: Tomas Mraz <tomas@openssl.org>
+Date: Tue, 22 Mar 2022 12:34:07 +0100
+Subject: [PATCH] tls_process_server_hello: Disallow repeated HRR
+
+Repeated HRR must be rejected.
+
+Fixes #17934
+
+Reviewed-by: Todd Short <todd.short@me.com>
+Reviewed-by: Matt Caswell <matt@openssl.org>
+(Merged from https://github.com/openssl/openssl/pull/17936)
+
+(cherry picked from commit d204a50b898435fbf937316d5693008cebf62eef)
+---
+ ssl/statem/statem_clnt.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/ssl/statem/statem_clnt.c b/ssl/statem/statem_clnt.c
+index d1a3969812..e3aba393f9 100644
+--- a/ssl/statem/statem_clnt.c
++++ b/ssl/statem/statem_clnt.c
+@@ -1422,6 +1422,10 @@ MSG_PROCESS_RETURN tls_process_server_hello(SSL *s, PACKET *pkt)
+             && sversion == TLS1_2_VERSION
+             && PACKET_remaining(pkt) >= SSL3_RANDOM_SIZE
+             && memcmp(hrrrandom, PACKET_data(pkt), SSL3_RANDOM_SIZE) == 0) {
++        if (s->hello_retry_request != SSL_HRR_NONE) {
++            SSLfatal(s, SSL_AD_UNEXPECTED_MESSAGE, SSL_R_UNEXPECTED_MESSAGE);
++            goto err;
++        }
+         s->hello_retry_request = SSL_HRR_PENDING;
+         hrr = 1;
+         if (!PACKET_forward(pkt, SSL3_RANDOM_SIZE)) {
+-- 
+2.17.1
+
