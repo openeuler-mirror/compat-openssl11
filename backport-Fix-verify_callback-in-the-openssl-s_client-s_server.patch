@@ -1,0 +1,64 @@
+From 86945b10ccd84f685bd6215bbb00d1e700303e49 Mon Sep 17 00:00:00 2001
+From: Dmitry Belyavskiy <beldmit@gmail.com>
+Date: Thu, 14 Jul 2022 21:41:48 +0200
+Subject: [PATCH] Fix verify_callback in the openssl s_client/s_server app
+
+We need to check that error cert is available before printing its data
+
+Reviewed-by: Tomas Mraz <tomas@openssl.org>
+Reviewed-by: David von Oheimb <david.von.oheimb@siemens.com>
+Reviewed-by: Viktor Dukhovni <viktor@openssl.org>
+Reviewed-by: Hugo Landau <hlandau@openssl.org>
+(Merged from https://github.com/openssl/openssl/pull/18805)
+
+(cherry picked from commit fad0f80eff188ef938fed614245a56ed56110deb)
+---
+ apps/s_cb.c | 26 ++++++++++++++++----------
+ 1 file changed, 16 insertions(+), 10 deletions(-)
+
+diff --git a/apps/s_cb.c b/apps/s_cb.c
+index d066a423de..a4ff978908 100644
+--- a/apps/s_cb.c
++++ b/apps/s_cb.c
+@@ -74,22 +74,28 @@ int verify_callback(int ok, X509_STORE_CTX *ctx)
+     }
+     switch (err) {
+     case X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT:
+-        BIO_puts(bio_err, "issuer= ");
+-        X509_NAME_print_ex(bio_err, X509_get_issuer_name(err_cert),
+-                           0, get_nameopt());
+-        BIO_puts(bio_err, "\n");
++        if (err_cert != NULL) {
++            BIO_puts(bio_err, "issuer= ");
++            X509_NAME_print_ex(bio_err, X509_get_issuer_name(err_cert),
++                               0, get_nameopt());
++            BIO_puts(bio_err, "\n");
++        }
+         break;
+     case X509_V_ERR_CERT_NOT_YET_VALID:
+     case X509_V_ERR_ERROR_IN_CERT_NOT_BEFORE_FIELD:
+-        BIO_printf(bio_err, "notBefore=");
+-        ASN1_TIME_print(bio_err, X509_get0_notBefore(err_cert));
+-        BIO_printf(bio_err, "\n");
++        if (err_cert != NULL) {
++            BIO_printf(bio_err, "notBefore=");
++            ASN1_TIME_print(bio_err, X509_get0_notBefore(err_cert));
++            BIO_printf(bio_err, "\n");
++        }
+         break;
+     case X509_V_ERR_CERT_HAS_EXPIRED:
+     case X509_V_ERR_ERROR_IN_CERT_NOT_AFTER_FIELD:
+-        BIO_printf(bio_err, "notAfter=");
+-        ASN1_TIME_print(bio_err, X509_get0_notAfter(err_cert));
+-        BIO_printf(bio_err, "\n");
++        if (err_cert != NULL) {
++            BIO_printf(bio_err, "notAfter=");
++            ASN1_TIME_print(bio_err, X509_get0_notAfter(err_cert));
++            BIO_printf(bio_err, "\n");
++        }
+         break;
+     case X509_V_ERR_NO_EXPLICIT_POLICY:
+         if (!verify_args.quiet)
+-- 
+2.17.1
+

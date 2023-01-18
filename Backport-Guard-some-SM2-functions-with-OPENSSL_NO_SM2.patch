@@ -1,0 +1,44 @@
+From 908570d02b683195ddfdc8e8c324638bfaa0d2c2 Mon Sep 17 00:00:00 2001
+From: Matt Caswell <matt@openssl.org>
+Date: Thu, 14 Mar 2019 11:14:38 +0000
+Subject: [PATCH 04/15] Guard some SM2 functions with OPENSSL_NO_SM2
+
+Fixes the no-ec build
+
+Reviewed-by: Richard Levitte <levitte@openssl.org>
+(Merged from https://github.com/openssl/openssl/pull/8481)
+---
+ include/openssl/x509.h | 2 ++
+ util/libcrypto.num     | 4 ++--
+ 2 files changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/include/openssl/x509.h b/include/openssl/x509.h
+index 5f17057..5c88251 100644
+--- a/include/openssl/x509.h
++++ b/include/openssl/x509.h
+@@ -573,8 +573,10 @@ void X509_get0_signature(const ASN1_BIT_STRING **psig,
+                          const X509_ALGOR **palg, const X509 *x);
+ int X509_get_signature_nid(const X509 *x);
+ 
++# ifndef OPENSSL_NO_SM2
+ void X509_set_sm2_id(X509 *x, ASN1_OCTET_STRING *sm2_id);
+ ASN1_OCTET_STRING *X509_get0_sm2_id(X509 *x);
++# endif
+ 
+ int X509_trusted(const X509 *x);
+ int X509_alias_set1(X509 *x, const unsigned char *name, int len);
+diff --git a/util/libcrypto.num b/util/libcrypto.num
+index 8635ac4..233d1c7 100644
+--- a/util/libcrypto.num
++++ b/util/libcrypto.num
+@@ -4626,5 +4626,5 @@ FIPS_drbg_get_strength                  6379	1_1_0g	EXIST::FUNCTION:
+ FIPS_rand_strength                      6380	1_1_0g	EXIST::FUNCTION:
+ FIPS_drbg_get_blocklength               6381	1_1_0g	EXIST::FUNCTION:
+ FIPS_drbg_init                          6382	1_1_0g	EXIST::FUNCTION:
+-X509_set_sm2_id                         6383	1_1_1m	EXIST::FUNCTION:
+-X509_get0_sm2_id                        6384	1_1_1m	EXIST::FUNCTION:
++X509_set_sm2_id                         6383	1_1_1m	EXIST::FUNCTION:SM2
++X509_get0_sm2_id                        6384	1_1_1m	EXIST::FUNCTION:SM2
+-- 
+2.20.1 (Apple Git-117)
+

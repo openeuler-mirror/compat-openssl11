@@ -1,0 +1,42 @@
+From 143d7d4c791df8b9051356be51d9f77bc241fe4c Mon Sep 17 00:00:00 2001
+From: Roberto Hueso Gomez <roberto@robertohueso.org>
+Date: Tue, 26 Jul 2022 20:41:02 +0200
+Subject: [PATCH] Fix EC_KEY_set_private_key() priv_key regression
+
+This allows to set EC_KEY's private key to NULL and fixes regression
+issue following OTC guideline in
+https://github.com/openssl/openssl/issues/18744#issuecomment-1195175696
+
+Fixes #18744.
+
+Reviewed-by: Nicola Tuveri <nic.tuv@gmail.com>
+Reviewed-by: Matt Caswell <matt@openssl.org>
+(Merged from https://github.com/openssl/openssl/pull/18874)
+---
+ crypto/ec/ec_key.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/crypto/ec/ec_key.c b/crypto/ec/ec_key.c
+index 3017f0936c..63799002bc 100644
+--- a/crypto/ec/ec_key.c
++++ b/crypto/ec/ec_key.c
+@@ -443,6 +443,16 @@ int EC_KEY_set_private_key(EC_KEY *key, const BIGNUM *priv_key)
+         && key->meth->set_private(key, priv_key) == 0)
+         return 0;
+ 
++    /*
++     * Return `0` to comply with legacy behavior for this function, see
++     * https://github.com/openssl/openssl/issues/18744#issuecomment-1195175696
++     */
++    if (priv_key == NULL) {
++        BN_clear_free(key->priv_key);
++        key->priv_key = NULL;
++        return 0; /* intentional for legacy compatibility */
++    }
++
+     /*
+      * We should never leak the bit length of the secret scalar in the key,
+      * so we always set the `BN_FLG_CONSTTIME` flag on the internal `BIGNUM`
+-- 
+2.17.1
+

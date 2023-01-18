@@ -1,0 +1,36 @@
+From c02fff5aecd4d002143a0e901f3dde3d14934a18 Mon Sep 17 00:00:00 2001
+From: Dmitry Belyavskiy <beldmit@gmail.com>
+Date: Mon, 7 Mar 2022 17:05:57 +0100
+Subject: [PATCH] Avoid potential memory leak
+
+Resolves #17827
+
+Reviewed-by: Tomas Mraz <tomas@openssl.org>
+Reviewed-by: Paul Dale <pauli@openssl.org>
+(Merged from https://github.com/openssl/openssl/pull/17828)
+
+(cherry picked from commit 175355923046921a689b500f7a72455f7095708f)
+---
+ crypto/x509v3/v3_utl.c | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/crypto/x509v3/v3_utl.c b/crypto/x509v3/v3_utl.c
+index 40d8f31554..83a4bc8a06 100644
+--- a/crypto/x509v3/v3_utl.c
++++ b/crypto/x509v3/v3_utl.c
+@@ -538,8 +538,11 @@ static int append_ia5(STACK_OF(OPENSSL_STRING) **sk, const ASN1_IA5STRING *email
+         return 0;
+ 
+     emtmp = OPENSSL_strndup((char *)email->data, email->length);
+-    if (emtmp == NULL)
++    if (emtmp == NULL) {
++        X509_email_free(*sk);
++        *sk = NULL;
+         return 0;
++    }
+ 
+     /* Don't add duplicates */
+     if (sk_OPENSSL_STRING_find(*sk, emtmp) != -1) {
+-- 
+2.17.1
+

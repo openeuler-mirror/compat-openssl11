@@ -1,0 +1,36 @@
+From 93ac3b8dd1cc49b27c402278cbe73a1c4ac91f9b Mon Sep 17 00:00:00 2001
+From: Hugo Landau <hlandau@openssl.org>
+Date: Mon, 4 Apr 2022 12:25:16 +0100
+Subject: [PATCH] Fix failure to check result of bn_rshift_fixed_top
+
+Fixes #18010.
+
+Reviewed-by: Matt Caswell <matt@openssl.org>
+Reviewed-by: Paul Dale <pauli@openssl.org>
+(Merged from https://github.com/openssl/openssl/pull/18034)
+
+(cherry picked from commit bc6bac8561ead83d6135f376ffcbbb0b657e64fe)
+---
+ crypto/bn/bn_div.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/crypto/bn/bn_div.c b/crypto/bn/bn_div.c
+index 0da9f39b31..e2821fb6cd 100644
+--- a/crypto/bn/bn_div.c
++++ b/crypto/bn/bn_div.c
+@@ -446,8 +446,10 @@ int bn_div_fixed_top(BIGNUM *dv, BIGNUM *rm, const BIGNUM *num,
+     snum->neg = num_neg;
+     snum->top = div_n;
+     snum->flags |= BN_FLG_FIXED_TOP;
+-    if (rm != NULL)
+-        bn_rshift_fixed_top(rm, snum, norm_shift);
++
++    if (rm != NULL && bn_rshift_fixed_top(rm, snum, norm_shift) == 0)
++        goto err;
++
+     BN_CTX_end(ctx);
+     return 1;
+  err:
+-- 
+2.17.1
+

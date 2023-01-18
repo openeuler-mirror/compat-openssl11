@@ -1,0 +1,37 @@
+From cd2471cd797ae5a6355814bb14a176af6a7d883f Mon Sep 17 00:00:00 2001
+From: Pauli <pauli@openssl.org>
+Date: Wed, 16 Mar 2022 14:21:01 +1100
+Subject: [PATCH] Fix Coverity 1498611 & 1498608: uninitialised read
+
+Reviewed-by: Shane Lontis <shane.lontis@oracle.com>
+Reviewed-by: Tomas Mraz <tomas@openssl.org>
+(Merged from https://github.com/openssl/openssl/pull/17893)
+
+(cherry picked from commit 09134f183f76539aa1294adfef10fcc694e90267)
+---
+ ssl/ssl_lib.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/ssl/ssl_lib.c b/ssl/ssl_lib.c
+index 9c411a3293..7383badce3 100644
+--- a/ssl/ssl_lib.c
++++ b/ssl/ssl_lib.c
+@@ -2084,6 +2084,7 @@ int SSL_shutdown(SSL *s)
+         if ((s->mode & SSL_MODE_ASYNC) && ASYNC_get_current_job() == NULL) {
+             struct ssl_async_args args;
+ 
++            memset(&args, 0, sizeof(args));
+             args.s = s;
+             args.type = OTHERFUNC;
+             args.f.func_other = s->method->ssl_shutdown;
+@@ -3709,6 +3710,7 @@ int SSL_do_handshake(SSL *s)
+         if ((s->mode & SSL_MODE_ASYNC) && ASYNC_get_current_job() == NULL) {
+             struct ssl_async_args args;
+ 
++            memset(&args, 0, sizeof(args));
+             args.s = s;
+ 
+             ret = ssl_start_async_job(s, &args, ssl_do_handshake_intern);
+-- 
+2.17.1
+

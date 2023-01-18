@@ -1,0 +1,76 @@
+From 264a3f453c418dc01f4b74928ed2a76a08a65513 Mon Sep 17 00:00:00 2001
+From: Matt Caswell <matt@openssl.org>
+Date: Fri, 10 Jun 2022 12:33:45 +0100
+Subject: [PATCH] Fix a crash in v2i_IPAddrBlocks()
+
+If an IP address prefix value is supplied that is too large then a crash
+can result. v2i_IPAddrBlocks() should sanity check the prefix value, as
+should X509v3_addr_add_prefix().
+
+Reported by Theo Buehler (@botovq)
+
+Reviewed-by: Tomas Mraz <tomas@openssl.org>
+Reviewed-by: Dmitry Belyavskiy <beldmit@gmail.com>
+Reviewed-by: Hugo Landau <hlandau@openssl.org>
+(Merged from https://github.com/openssl/openssl/pull/18847)
+---
+ crypto/x509v3/v3_addr.c | 17 ++++---
+ test/v3ext.c            | 99 +++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 111 insertions(+), 5 deletions(-)
+
+diff --git a/crypto/x509v3/v3_addr.c b/crypto/x509v3/v3_addr.c
+index ccce34ef2e..f9c368bea4 100644
+--- a/crypto/x509v3/v3_addr.c
++++ b/crypto/x509v3/v3_addr.c
+@@ -392,12 +392,14 @@ static int range_should_be_prefix(const unsigned char *min,
+ /*
+  * Construct a prefix.
+  */
+-static int make_addressPrefix(IPAddressOrRange **result,
+-                              unsigned char *addr, const int prefixlen)
++static int make_addressPrefix(IPAddressOrRange **result, unsigned char *addr,
++                              const int prefixlen, const int afilen)
+ {
+     int bytelen = (prefixlen + 7) / 8, bitlen = prefixlen % 8;
+     IPAddressOrRange *aor = IPAddressOrRange_new();
+ 
++    if (prefixlen < 0 || prefixlen > (afilen * 8))
++        return 0;
+     if (aor == NULL)
+         return 0;
+     aor->type = IPAddressOrRange_addressPrefix;
+@@ -437,7 +439,7 @@ static int make_addressRange(IPAddressOrRange **result,
+         return 0;
+ 
+     if ((prefixlen = range_should_be_prefix(min, max, length)) >= 0)
+-        return make_addressPrefix(result, min, prefixlen);
++        return make_addressPrefix(result, min, prefixlen, length);
+ 
+     if ((aor = IPAddressOrRange_new()) == NULL)
+         return 0;
+@@ -599,7 +601,9 @@ int X509v3_addr_add_prefix(IPAddrBlocks *addr,
+ {
+     IPAddressOrRanges *aors = make_prefix_or_range(addr, afi, safi);
+     IPAddressOrRange *aor;
+-    if (aors == NULL || !make_addressPrefix(&aor, a, prefixlen))
++
++    if (aors == NULL
++            || !make_addressPrefix(&aor, a, prefixlen, length_from_afi(afi)))
+         return 0;
+     if (sk_IPAddressOrRange_push(aors, aor))
+         return 1;
+@@ -996,7 +1000,10 @@ static void *v2i_IPAddrBlocks(const struct v3_ext_method *method,
+         switch (delim) {
+         case '/':
+             prefixlen = (int)strtoul(s + i2, &t, 10);
+-            if (t == s + i2 || *t != '\0') {
++            if (t == s + i2
++                    || *t != '\0'
++                    || prefixlen > (length * 8)
++                    || prefixlen < 0) {
+                 X509V3err(X509V3_F_V2I_IPADDRBLOCKS,
+                           X509V3_R_EXTENSION_VALUE_ERROR);
+                 X509V3_conf_err(val);
+-- 
+2.17.1
+

@@ -1,0 +1,100 @@
+From f29ec6563ddf81db46c464d14f2bb29a3fa5592f Mon Sep 17 00:00:00 2001
+From: Tomas Mraz <tomas@openssl.org>
+Date: Tue, 22 Mar 2022 16:33:52 +0100
+Subject: [PATCH] Test processing of a duplicated HRR
+
+Reviewed-by: Todd Short <todd.short@me.com>
+Reviewed-by: Matt Caswell <matt@openssl.org>
+(Merged from https://github.com/openssl/openssl/pull/17936)
+
+(cherry picked from commit db44b55aaa42141921217183667800425227b658)
+---
+ test/recipes/70-test_tls13hrr.t | 51 +++++++++++++++++++++++++++++++--
+ 1 file changed, 49 insertions(+), 2 deletions(-)
+
+diff --git a/test/recipes/70-test_tls13hrr.t b/test/recipes/70-test_tls13hrr.t
+index e0b47ed359..411e749971 100644
+--- a/test/recipes/70-test_tls13hrr.t
++++ b/test/recipes/70-test_tls13hrr.t
+@@ -37,7 +37,8 @@ my $proxy = TLSProxy::Proxy->new(
+ 
+ use constant {
+     CHANGE_HRR_CIPHERSUITE => 0,
+-    CHANGE_CH1_CIPHERSUITE => 1
++    CHANGE_CH1_CIPHERSUITE => 1,
++    DUPLICATE_HRR => 2
+ };
+ 
+ #Test 1: A client should fail if the server changes the ciphersuite between the
+@@ -46,7 +47,7 @@ $proxy->filter(\&hrr_filter);
+ $proxy->serverflags("-curves P-256");
+ my $testtype = CHANGE_HRR_CIPHERSUITE;
+ $proxy->start() or plan skip_all => "Unable to start up Proxy for tests";
+-plan tests => 2;
++plan tests => 3;
+ ok(TLSProxy::Message->fail(), "Server ciphersuite changes");
+ 
+ #Test 2: It is an error if the client changes the offered ciphersuites so that
+@@ -58,6 +59,19 @@ $testtype = CHANGE_CH1_CIPHERSUITE;
+ $proxy->start();
+ ok(TLSProxy::Message->fail(), "Client ciphersuite changes");
+ 
++#Test 3: A client should fail with unexpected_message alert if the server
++#        sends more than 1 HRR
++my $fatal_alert = 0;
++$proxy->clear();
++if (disabled("ec")) {
++    $proxy->serverflags("-curves ffdhe3072");
++} else {
++    $proxy->serverflags("-curves P-256");
++}
++$testtype = DUPLICATE_HRR;
++$proxy->start();
++ok($fatal_alert, "Server duplicated HRR");
++
+ sub hrr_filter
+ {
+     my $proxy = shift;
+@@ -78,6 +92,39 @@ sub hrr_filter
+         return;
+     }
+ 
++    if ($testtype == DUPLICATE_HRR) {
++        # We're only interested in the HRR
++        # and the unexpected_message alert from client
++        if ($proxy->flight == 4) {
++            $fatal_alert = 1
++                if @{$proxy->record_list}[-1]->is_fatal_alert(0) == 10;
++            return;
++        }
++        if ($proxy->flight != 3) {
++            return;
++        }
++
++        # Find ServerHello record (HRR actually) and insert after that
++        my $i;
++        for ($i = 0; ${$proxy->record_list}[$i]->flight() < 1; $i++) {
++            next;
++        }
++        my $hrr_record = ${$proxy->record_list}[$i];
++        my $dup_hrr = TLSProxy::Record->new(3,
++            $hrr_record->content_type(),
++            $hrr_record->version(),
++            $hrr_record->len(),
++            $hrr_record->sslv2(),
++            $hrr_record->len_real(),
++            $hrr_record->decrypt_len(),
++            $hrr_record->data(),
++            $hrr_record->decrypt_data());
++
++        $i++;
++        splice @{$proxy->record_list}, $i, 0, $dup_hrr;
++        return;
++    }
++
+     # CHANGE_CH1_CIPHERSUITE
+     if ($proxy->flight != 0) {
+         return;
+-- 
+2.17.1
+

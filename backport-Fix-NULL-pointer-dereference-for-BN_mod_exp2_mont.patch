@@ -1,0 +1,98 @@
+From 8845aeb3ed528491b9eccba365182f90540e5b95 Mon Sep 17 00:00:00 2001
+From: Hugo Landau <hlandau@openssl.org>
+Date: Tue, 1 Mar 2022 14:08:12 +0000
+Subject: [PATCH] Fix NULL pointer dereference for BN_mod_exp2_mont
+
+This fixes a bug whereby BN_mod_exp2_mont can dereference a NULL pointer
+if BIGNUM argument m represents zero.
+
+Regression test added. Fixes #17648. Backport from master to 1.1.
+
+Reviewed-by: Matt Caswell <matt@openssl.org>
+Reviewed-by: Todd Short <todd.short@me.com>
+Reviewed-by: Tomas Mraz <tomas@openssl.org>
+(Merged from https://github.com/openssl/openssl/pull/17787)
+---
+ crypto/bn/bn_exp2.c |  2 +-
+ test/bntest.c       | 45 +++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 46 insertions(+), 1 deletion(-)
+
+diff --git a/crypto/bn/bn_exp2.c b/crypto/bn/bn_exp2.c
+index e542abe46f..de3e249d78 100644
+--- a/crypto/bn/bn_exp2.c
++++ b/crypto/bn/bn_exp2.c
+@@ -32,7 +32,7 @@ int BN_mod_exp2_mont(BIGNUM *rr, const BIGNUM *a1, const BIGNUM *p1,
+     bn_check_top(p2);
+     bn_check_top(m);
+ 
+-    if (!(m->d[0] & 1)) {
++    if (!BN_is_odd(m)) {
+         BNerr(BN_F_BN_MOD_EXP2_MONT, BN_R_CALLED_WITH_EVEN_MODULUS);
+         return 0;
+     }
+diff --git a/test/bntest.c b/test/bntest.c
+index bab34ba54b..390dd80073 100644
+--- a/test/bntest.c
++++ b/test/bntest.c
+@@ -2798,6 +2798,50 @@ static int test_mod_exp_consttime(int i)
+     return res;
+ }
+ 
++/*
++ * Regression test to ensure BN_mod_exp2_mont fails safely if argument m is
++ * zero.
++ */
++static int test_mod_exp2_mont(void)
++{
++    int res = 0;
++    BIGNUM *exp_result = NULL;
++    BIGNUM *exp_a1 = NULL, *exp_p1 = NULL, *exp_a2 = NULL, *exp_p2 = NULL,
++           *exp_m = NULL;
++
++    if (!TEST_ptr(exp_result = BN_new())
++            || !TEST_ptr(exp_a1 = BN_new())
++            || !TEST_ptr(exp_p1 = BN_new())
++            || !TEST_ptr(exp_a2 = BN_new())
++            || !TEST_ptr(exp_p2 = BN_new())
++            || !TEST_ptr(exp_m = BN_new()))
++        goto err;
++
++    if (!TEST_true(BN_one(exp_a1))
++            || !TEST_true(BN_one(exp_p1))
++            || !TEST_true(BN_one(exp_a2))
++            || !TEST_true(BN_one(exp_p2)))
++        goto err;
++
++    BN_zero(exp_m);
++
++    /* input of 0 is even, so must fail */
++    if (!TEST_int_eq(BN_mod_exp2_mont(exp_result, exp_a1, exp_p1, exp_a2,
++                exp_p2, exp_m, ctx, NULL), 0))
++        goto err;
++
++    res = 1;
++
++err:
++    BN_free(exp_result);
++    BN_free(exp_a1);
++    BN_free(exp_p1);
++    BN_free(exp_a2);
++    BN_free(exp_p2);
++    BN_free(exp_m);
++    return res;
++}
++
+ static int file_test_run(STANZA *s)
+ {
+     static const FILETEST filetests[] = {
+@@ -2906,6 +2950,7 @@ int setup_tests(void)
+         ADD_TEST(test_gcd_prime);
+         ADD_ALL_TESTS(test_mod_exp, (int)OSSL_NELEM(ModExpTests));
+         ADD_ALL_TESTS(test_mod_exp_consttime, (int)OSSL_NELEM(ModExpTests));
++        ADD_TEST(test_mod_exp2_mont);
+     } else {
+         ADD_ALL_TESTS(run_file_tests, n);
+     }
+-- 
+2.17.1
+

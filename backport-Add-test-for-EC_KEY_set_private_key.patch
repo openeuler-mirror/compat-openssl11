@@ -1,0 +1,71 @@
+From 1c2f52bed3ebee6222cf078278074c72717df4ec Mon Sep 17 00:00:00 2001
+From: Roberto Hueso Gomez <roberto@robertohueso.org>
+Date: Mon, 1 Aug 2022 02:08:47 +0200
+Subject: [PATCH] Add test for EC_KEY_set_private_key()
+
+This tests the behavior and API of the EC_KEY_set_private_key function.
+It tests compliance with legacy features related to NULL private keys
+too.
+
+Reviewed-by: Nicola Tuveri <nic.tuv@gmail.com>
+Reviewed-by: Matt Caswell <matt@openssl.org>
+(Merged from https://github.com/openssl/openssl/pull/18874)
+---
+ test/ec_internal_test.c | 34 ++++++++++++++++++++++++++++++++++
+ 1 file changed, 34 insertions(+)
+
+diff --git a/test/ec_internal_test.c b/test/ec_internal_test.c
+index 45a36ab94a..4da842a8a7 100644
+--- a/test/ec_internal_test.c
++++ b/test/ec_internal_test.c
+@@ -183,6 +183,39 @@ static int field_tests_default(int n)
+     return ret;
+ }
+ 
++/*
++ * Tests behavior of the EC_KEY_set_private_key
++ */
++static int set_private_key(void)
++{
++    EC_KEY *key = NULL, *aux_key = NULL;
++    int testresult = 0;
++
++    key = EC_KEY_new_by_curve_name(NID_secp224r1);
++    aux_key = EC_KEY_new_by_curve_name(NID_secp224r1);
++    if (!TEST_ptr(key)
++        || !TEST_ptr(aux_key)
++        || !TEST_int_eq(EC_KEY_generate_key(key), 1)
++        || !TEST_int_eq(EC_KEY_generate_key(aux_key), 1))
++        goto err;
++
++    /* Test setting a valid private key */
++    if (!TEST_int_eq(EC_KEY_set_private_key(key, aux_key->priv_key), 1))
++        goto err;
++
++    /* Test compliance with legacy behavior for NULL private keys */
++    if (!TEST_int_eq(EC_KEY_set_private_key(key, NULL), 0)
++        || !TEST_ptr_null(key->priv_key))
++        goto err;
++
++    testresult = 1;
++
++ err:
++    EC_KEY_free(key);
++    EC_KEY_free(aux_key);
++    return testresult;
++}
++
+ /*
+  * Tests behavior of the decoded_from_explicit_params flag and API
+  */
+@@ -337,6 +370,7 @@ int setup_tests(void)
+     ADD_TEST(field_tests_ec2_simple);
+ #endif
+     ADD_ALL_TESTS(field_tests_default, crv_len);
++    ADD_TEST(set_private_key);
+     ADD_TEST(decoded_flag_test);
+     ADD_ALL_TESTS(ecpkparams_i2d2i_test, crv_len);
+ 
+-- 
+2.17.1
+

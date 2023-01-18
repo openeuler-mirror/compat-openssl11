@@ -1,0 +1,37 @@
+From 3b9082c844913d3a0efada9fac0bd2924ce1a8f2 Mon Sep 17 00:00:00 2001
+From: valdaarhun <icegambit91@gmail.com>
+Date: Mon, 25 Jul 2022 18:49:19 +0530
+Subject: [PATCH] Fixes segfault occurrence in PEM_write()
+
+Checks if header is NULL or not before calling strlen().
+
+CLA: trivial
+
+Fixes #18825
+
+Reviewed-by: Tomas Mraz <tomas@openssl.org>
+Reviewed-by: Ben Kaduk <kaduk@mit.edu>
+Reviewed-by: Paul Dale <pauli@openssl.org>
+(Merged from https://github.com/openssl/openssl/pull/18865)
+
+(cherry picked from commit 205957405d08ef199e6ab654e333a627bbca9ccc)
+---
+ crypto/pem/pem_lib.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/crypto/pem/pem_lib.c b/crypto/pem/pem_lib.c
+index 2de093595d..c2cf407931 100644
+--- a/crypto/pem/pem_lib.c
++++ b/crypto/pem/pem_lib.c
+@@ -621,7 +621,7 @@ int PEM_write_bio(BIO *bp, const char *name, const char *header,
+         (BIO_write(bp, "-----\n", 6) != 6))
+         goto err;
+ 
+-    i = strlen(header);
++    i = header != NULL ? strlen(header) : 0;
+     if (i > 0) {
+         if ((BIO_write(bp, header, i) != i) || (BIO_write(bp, "\n", 1) != 1))
+             goto err;
+-- 
+2.17.1
+

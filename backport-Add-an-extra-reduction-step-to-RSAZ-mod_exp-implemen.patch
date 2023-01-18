@@ -1,0 +1,123 @@
+From 8438d3a7b7309cbea521d3628fddeda7bd6d6e20 Mon Sep 17 00:00:00 2001
+From: Tomas Mraz <tomas@openssl.org>
+Date: Thu, 9 Jun 2022 16:20:05 +0200
+Subject: [PATCH] Add an extra reduction step to RSAZ mod_exp implementations
+
+Inspired by BoringSSL fix by David Benjamin.
+
+Reviewed-by: Matt Caswell <matt@openssl.org>
+Reviewed-by: Paul Dale <pauli@openssl.org>
+(Merged from https://github.com/openssl/openssl/pull/18511)
+---
+ crypto/bn/rsaz_exp.c                   |  8 ++++++++
+ crypto/bn/rsaz_exp.h                   | 23 +++++++++++++++++++++++
+ test/recipes/10-test_bn_data/bnmod.txt | 10 ++++------
+ 3 files changed, 35 insertions(+), 6 deletions(-)
+
+diff --git a/crypto/bn/rsaz_exp.c b/crypto/bn/rsaz_exp.c
+index 22455b8a63..5c5cd4c282 100644
+--- a/crypto/bn/rsaz_exp.c
++++ b/crypto/bn/rsaz_exp.c
+@@ -66,6 +66,7 @@ void RSAZ_1024_mod_exp_avx2(BN_ULONG result_norm[16],
+     unsigned char *R2 = table_s; /* borrow */
+     int index;
+     int wvalue;
++    BN_ULONG tmp[16];
+ 
+     if ((((size_t)p_str & 4095) + 320) >> 12) {
+         result = p_str;
+@@ -237,7 +238,10 @@ void RSAZ_1024_mod_exp_avx2(BN_ULONG result_norm[16],
+ 
+     rsaz_1024_red2norm_avx2(result_norm, result);
+ 
++    bn_reduce_once_in_place(result_norm, /*carry=*/0, m_norm, tmp, 16);
++
+     OPENSSL_cleanse(storage, sizeof(storage));
++    OPENSSL_cleanse(tmp, sizeof(tmp));
+ }
+ 
+ /*
+@@ -266,6 +270,7 @@ void RSAZ_512_mod_exp(BN_ULONG result[8],
+     unsigned char *p_str = (unsigned char *)exponent;
+     int index;
+     unsigned int wvalue;
++    BN_ULONG tmp[8];
+ 
+     /* table[0] = 1_inv */
+     temp[0] = 0 - m[0];
+@@ -309,7 +314,10 @@ void RSAZ_512_mod_exp(BN_ULONG result[8],
+     /* from Montgomery */
+     rsaz_512_mul_by_one(result, temp, m, k0);
+ 
++    bn_reduce_once_in_place(result, /*carry=*/0, m, tmp, 8);
++
+     OPENSSL_cleanse(storage, sizeof(storage));
++    OPENSSL_cleanse(tmp, sizeof(tmp));
+ }
+ 
+ #endif
+diff --git a/crypto/bn/rsaz_exp.h b/crypto/bn/rsaz_exp.h
+index 88f65a4bae..606496d45a 100644
+--- a/crypto/bn/rsaz_exp.h
++++ b/crypto/bn/rsaz_exp.h
+@@ -22,6 +22,8 @@
+ #  define RSAZ_ENABLED
+ 
+ #  include <openssl/bn.h>
++#  include "internal/constant_time.h"
++#  include "bn_local.h"
+ 
+ void RSAZ_1024_mod_exp_avx2(BN_ULONG result[16],
+                             const BN_ULONG base_norm[16],
+@@ -35,6 +37,27 @@ void RSAZ_512_mod_exp(BN_ULONG result[8],
+                       const BN_ULONG m_norm[8], BN_ULONG k0,
+                       const BN_ULONG RR[8]);
+ 
++static ossl_inline void bn_select_words(BN_ULONG *r, BN_ULONG mask,
++                                        const BN_ULONG *a,
++                                        const BN_ULONG *b, size_t num)
++{
++    size_t i;
++
++    for (i = 0; i < num; i++) {
++        r[i] = constant_time_select_64(mask, a[i], b[i]);
++    }
++}
++
++static ossl_inline BN_ULONG bn_reduce_once_in_place(BN_ULONG *r,
++                                                    BN_ULONG carry,
++                                                    const BN_ULONG *m,
++                                                    BN_ULONG *tmp, size_t num)
++{
++    carry -= bn_sub_words(tmp, r, m, num);
++    bn_select_words(r, carry, r /* tmp < 0 */, tmp /* tmp >= 0 */, num);
++    return carry;
++}
++
+ # endif
+ 
+ #endif
+diff --git a/test/recipes/10-test_bn_data/bnmod.txt b/test/recipes/10-test_bn_data/bnmod.txt
+index 69f8af43d5..edde03bd62 100644
+--- a/test/recipes/10-test_bn_data/bnmod.txt
++++ b/test/recipes/10-test_bn_data/bnmod.txt
+@@ -2493,12 +2493,10 @@ E = ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ M = 8f42c9e9e351ba9b32ab0cf69da43f4acf7028d19cff6e5059ea0e3fcc97c97f36a31470044737d4c0c933ac441ecb29e32c81401523afdac7de9c3fd8493c97
+ 
+ # 1024-bit
+-# TODO(davidben): This test breaks the RSAZ implementation. Fix it and enable
+-# this test.
+-# ModExp = 00
+-# A = 800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002f
+-# E = ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+-# M = 9da8dc26fdf4d2e49833b240ee552beb7a6e251caa91bfb5d6cafaf8ed9461877fda8f6ac299036d35806bc1ae7872e54eaac1ec6bee6d02c6621a9cf8883b3abc33c49b3e601203e0e86ef8f0562412cc689ee2670704583909ca6d7774c9f9f9f4d77d37fedef9cb51d207cb629ec02fa03b526fd6594bfa8f2da71238a0b7
++ModExp = 00
++A = 800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002f
++E = ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
++M = 9da8dc26fdf4d2e49833b240ee552beb7a6e251caa91bfb5d6cafaf8ed9461877fda8f6ac299036d35806bc1ae7872e54eaac1ec6bee6d02c6621a9cf8883b3abc33c49b3e601203e0e86ef8f0562412cc689ee2670704583909ca6d7774c9f9f9f4d77d37fedef9cb51d207cb629ec02fa03b526fd6594bfa8f2da71238a0b7
+ 
+ # 1025-bit
+ ModExp = 00
+-- 
+2.17.1
+

@@ -1,0 +1,36 @@
+From 3e8f70c30d84861fcd257a6e280dc49e104eb145 Mon Sep 17 00:00:00 2001
+From: Matt Caswell <matt@openssl.org>
+Date: Wed, 30 Mar 2022 14:49:24 +0100
+Subject: [PATCH] Fix usage of SSLfatal
+
+A cherry-pick from the master branch incorrectly introduced a usage of
+3 argument SSLfatal. In 1.1.1 the function code is also required.
+
+Fixes #17999
+
+Reviewed-by: Bernd Edlinger <bernd.edlinger@hotmail.de>
+Reviewed-by: Tomas Mraz <tomas@openssl.org>
+Reviewed-by: Dmitry Belyavskiy <beldmit@gmail.com>
+Reviewed-by: Matt Caswell <matt@openssl.org>
+(Merged from https://github.com/openssl/openssl/pull/18000)
+---
+ ssl/statem/statem_clnt.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/ssl/statem/statem_clnt.c b/ssl/statem/statem_clnt.c
+index e3aba393f9..2bc5cf5ec3 100644
+--- a/ssl/statem/statem_clnt.c
++++ b/ssl/statem/statem_clnt.c
+@@ -1423,7 +1423,8 @@ MSG_PROCESS_RETURN tls_process_server_hello(SSL *s, PACKET *pkt)
+             && PACKET_remaining(pkt) >= SSL3_RANDOM_SIZE
+             && memcmp(hrrrandom, PACKET_data(pkt), SSL3_RANDOM_SIZE) == 0) {
+         if (s->hello_retry_request != SSL_HRR_NONE) {
+-            SSLfatal(s, SSL_AD_UNEXPECTED_MESSAGE, SSL_R_UNEXPECTED_MESSAGE);
++            SSLfatal(s, SSL_AD_UNEXPECTED_MESSAGE,
++                     SSL_F_TLS_PROCESS_SERVER_HELLO, SSL_R_UNEXPECTED_MESSAGE);
+             goto err;
+         }
+         s->hello_retry_request = SSL_HRR_PENDING;
+-- 
+2.17.1
+

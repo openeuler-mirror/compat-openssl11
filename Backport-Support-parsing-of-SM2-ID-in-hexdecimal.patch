@@ -1,0 +1,127 @@
+From 1d9e832e41858b13a96899d842afd183f1c66c48 Mon Sep 17 00:00:00 2001
+From: Paul Yang <kaishen.yy@antfin.com>
+Date: Tue, 30 Jul 2019 23:05:44 +0800
+Subject: [PATCH 11/15] Support parsing of SM2 ID in hexdecimal
+
+The current EVP_PEKY_ctrl for SM2 has no capability of parsing an ID
+input in hexdecimal.
+
+The newly added ctrl string is called: sm2_hex_id
+
+Test cases and documentation are updated.
+
+Reviewed-by: Tim Hudson <tjh@openssl.org>
+Reviewed-by: Richard Levitte <levitte@openssl.org>
+(Merged from https://github.com/openssl/openssl/pull/9584)
+---
+ crypto/sm2/sm2_pmeth.c     | 19 +++++++++++++++++++
+ doc/man1/pkeyutl.pod       |  7 +++++++
+ include/openssl/ec.h       |  1 -
+ test/recipes/25-test_req.t | 15 +++++++++++++--
+ 4 files changed, 39 insertions(+), 3 deletions(-)
+
+diff --git a/crypto/sm2/sm2_pmeth.c b/crypto/sm2/sm2_pmeth.c
+index 837bdc1..9551d70 100644
+--- a/crypto/sm2/sm2_pmeth.c
++++ b/crypto/sm2/sm2_pmeth.c
+@@ -232,6 +232,10 @@ static int pkey_sm2_ctrl(EVP_PKEY_CTX *ctx, int type, int p1, void *p2)
+ static int pkey_sm2_ctrl_str(EVP_PKEY_CTX *ctx,
+                              const char *type, const char *value)
+ {
++    uint8_t *hex_id;
++    long hex_len = 0;
++    int ret = 0;
++
+     if (strcmp(type, "ec_paramgen_curve") == 0) {
+         int nid = NID_undef;
+ 
+@@ -255,6 +259,21 @@ static int pkey_sm2_ctrl_str(EVP_PKEY_CTX *ctx,
+     } else if (strcmp(type, "sm2_id") == 0) {
+         return pkey_sm2_ctrl(ctx, EVP_PKEY_CTRL_SET1_ID,
+                              (int)strlen(value), (void *)value);
++    } else if (strcmp(type, "sm2_hex_id") == 0) {
++        /*
++         * TODO(3.0): reconsider the name "sm2_hex_id", OR change
++         * OSSL_PARAM_construct_from_text() / OSSL_PARAM_allocate_from_text()
++         * to handle infix "_hex_"
++         */
++        hex_id = OPENSSL_hexstr2buf((const char *)value, &hex_len);
++        if (hex_id == NULL) {
++            SM2err(SM2_F_PKEY_SM2_CTRL_STR, ERR_R_PASSED_INVALID_ARGUMENT);
++            return 0;
++        }
++        ret = pkey_sm2_ctrl(ctx, EVP_PKEY_CTRL_SET1_ID, (int)hex_len,
++                            (void *)hex_id);
++        OPENSSL_free(hex_id);
++        return ret;
+     }
+ 
+     return -2;
+diff --git a/doc/man1/pkeyutl.pod b/doc/man1/pkeyutl.pod
+index f0f80af..1a742ab 100644
+--- a/doc/man1/pkeyutl.pod
++++ b/doc/man1/pkeyutl.pod
+@@ -329,6 +329,13 @@ This sets the ID string used in SM2 sign or verify operations. While verifying
+ an SM2 signature, the ID string must be the same one used when signing the data.
+ Otherwise the verification will fail.
+ 
++=item B<sm2_hex_id:hex_string>
++
++This sets the ID string used in SM2 sign or verify operations. While verifying
++an SM2 signature, the ID string must be the same one used when signing the data.
++Otherwise the verification will fail. The ID string provided with this option
++should be a valid hexadecimal value.
++
+ =back
+ 
+ =head1 EXAMPLES
+diff --git a/include/openssl/ec.h b/include/openssl/ec.h
+index 24baf53..e8c8869 100644
+--- a/include/openssl/ec.h
++++ b/include/openssl/ec.h
+@@ -1444,7 +1444,6 @@ void EC_KEY_METHOD_get_verify(const EC_KEY_METHOD *meth,
+ # define EVP_PKEY_CTX_set1_id(ctx, id, id_len) \
+         EVP_PKEY_CTX_ctrl(ctx, -1, -1, \
+                                 EVP_PKEY_CTRL_SET1_ID, (int)id_len, (void*)(id))
+-
+ # define EVP_PKEY_CTX_get1_id(ctx, id) \
+         EVP_PKEY_CTX_ctrl(ctx, -1, -1, \
+                                 EVP_PKEY_CTRL_GET1_ID, 0, (void*)(id))
+diff --git a/test/recipes/25-test_req.t b/test/recipes/25-test_req.t
+index 8289959..d53e577 100644
+--- a/test/recipes/25-test_req.t
++++ b/test/recipes/25-test_req.t
+@@ -182,10 +182,10 @@ subtest "generating certificate requests" => sub {
+ };
+ 
+ subtest "generating SM2 certificate requests" => sub {
+-    plan tests => 2;
++    plan tests => 4;
+ 
+     SKIP: {
+-        skip "SM2 is not supported by this OpenSSL build", 2
++        skip "SM2 is not supported by this OpenSSL build", 4
+         if disabled("sm2");
+         ok(run(app(["openssl", "req", "-config", srctop_file("test", "test.cnf"),
+                     "-new", "-key", srctop_file("test", "certs", "sm2.key"),
+@@ -197,6 +197,17 @@ subtest "generating SM2 certificate requests" => sub {
+                     "-verify", "-in", "testreq.pem", "-noout",
+                     "-sm2-id", "1234567812345678", "-sm3"])),
+            "Verifying signature on SM2 certificate request");
++
++        ok(run(app(["openssl", "req", "-config", srctop_file("test", "test.cnf"),
++                    "-new", "-key", srctop_file("test", "certs", "sm2.key"),
++                    "-sigopt", "sm2_hex_id:DEADBEEF",
++                    "-out", "testreq.pem", "-sm3"])),
++           "Generating SM2 certificate request with hex id");
++
++        ok(run(app(["openssl", "req", "-config", srctop_file("test", "test.cnf"),
++                    "-verify", "-in", "testreq.pem", "-noout",
++                    "-sm2-hex-id", "DEADBEEF", "-sm3"])),
++           "Verifying signature on SM2 certificate request");
+     }
+ };
+ 
+-- 
+2.20.1 (Apple Git-117)
+

@@ -1,0 +1,45 @@
+From 65e30e7d56f01008d29e65c9ae7a42ce074def2f Mon Sep 17 00:00:00 2001
+From: Amir Mohammadi <amiremohamadi@yahoo.com>
+Date: Wed, 4 Aug 2021 09:43:49 +0430
+Subject: [PATCH] Fix ipv4_from_asc behavior on invalid Ip addresses
+
+sscanf() call in ipv4_from_asc does not check that
+the string is terminated immediately after the last digit.
+
+(cherry picked from commit 8b9a13b43ba3d71e441fca47a52e800ce79b3d2b)
+
+Reviewed-by: Tomas Mraz <tomas@openssl.org>
+Reviewed-by: Dmitry Belyavskiy <beldmit@gmail.com>
+Reviewed-by: Hugo Landau <hlandau@openssl.org>
+(Merged from https://github.com/openssl/openssl/pull/18847)
+---
+ crypto/x509v3/v3_utl.c | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/crypto/x509v3/v3_utl.c b/crypto/x509v3/v3_utl.c
+index a7ff4b4fb4..eac78259fc 100644
+--- a/crypto/x509v3/v3_utl.c
++++ b/crypto/x509v3/v3_utl.c
+@@ -1087,12 +1087,17 @@ int a2i_ipadd(unsigned char *ipout, const char *ipasc)
+ 
+ static int ipv4_from_asc(unsigned char *v4, const char *in)
+ {
+-    int a0, a1, a2, a3;
+-    if (sscanf(in, "%d.%d.%d.%d", &a0, &a1, &a2, &a3) != 4)
++    const char *p;
++    int a0, a1, a2, a3, n;
++
++    if (sscanf(in, "%d.%d.%d.%d%n", &a0, &a1, &a2, &a3, &n) != 4)
+         return 0;
+     if ((a0 < 0) || (a0 > 255) || (a1 < 0) || (a1 > 255)
+         || (a2 < 0) || (a2 > 255) || (a3 < 0) || (a3 > 255))
+         return 0;
++    p = in + n;
++    if (!(*p == '\0' || ossl_isspace(*p)))
++        return 0;
+     v4[0] = a0;
+     v4[1] = a1;
+     v4[2] = a2;
+-- 
+2.17.1
+
