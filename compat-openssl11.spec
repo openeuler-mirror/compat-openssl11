@@ -1,7 +1,7 @@
 %define soversion 1.1
 Name:        compat-openssl11
 Version:     1.1.1m
-Release:     1
+Release:     2
 Epoch:       1
 Summary:     Cryptography and SSL/TLS Toolkit
 License:     OpenSSL and SSLeay
@@ -99,8 +99,6 @@ Patch88:     backport-X509-x509_req.c-Set-modified-flag-when-X509_req_info.patch
 Patch89:     backport-ssl_cipher_process_rulestr-don-t-read-outside-rule_s.patch
 
 BuildRequires: gcc perl make lksctp-tools-devel coreutils util-linux zlib-devel
-Requires:    coreutils %{name}-libs%{?_isa} = %{epoch}:%{version}-%{release}
-Conflicts: openssl < 1:3.0, openssl-libs < 1:3.0
 
 %description
 OpenSSL is a robust, commercial-grade, and full-featured toolkit for the
@@ -111,6 +109,7 @@ Summary:      A general purpose cryptography library with TLS implementation
 Group:        System Environment/Libraries
 Requires:     ca-certificates >= 2008-5
 Requires:     crypto-policies >= 20180730
+Conflicts:    openssl-libs < 1:3.0
 
 %description libs
 The openssl-libs package contains the libraries that are used
@@ -122,7 +121,7 @@ and protocols.
 Summary:   Development files for openssl
 Requires:  %{name}-libs%{?_isa} = %{epoch}:%{version}-%{release}
 Requires: krb5-devel zlib-devel pkgconfig
-
+Conflicts: openssl-devel
 %description devel
 %{summary}.
 
@@ -207,9 +206,6 @@ make test || :
 
 %postun libs -p /sbin/ldconfig
 
-%files
-%defattr(-,root,root)
-%license LICENSE
 
 %files libs
 %defattr(-,root,root)
@@ -234,5 +230,8 @@ make test || :
 %ldconfig_scriptlets libs
 
 %changelog
+* Thu Jan 19 2023 licihua <licihua@huawei.com> - 1:1.1.1m-2
+- Add Conflicts for compat-openssl11-devel compat-openssl11-lib
+
 * Fri Jan 13 2023 licihua <licihua@huawei.com> - 1:1.1.1m-1
 - Repackge openssl-1.1.1m into compat-openssl11
