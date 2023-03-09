@@ -1,7 +1,7 @@
 %define soversion 1.1
 Name:        compat-openssl11
 Version:     1.1.1m
-Release:     3
+Release:     4
 Epoch:       1
 Summary:     Cryptography and SSL/TLS Toolkit
 License:     OpenSSL and SSLeay
@@ -99,6 +99,9 @@ Patch88:     backport-X509-x509_req.c-Set-modified-flag-when-X509_req_info.patch
 Patch89:     backport-ssl_cipher_process_rulestr-don-t-read-outside-rule_s.patch
 Patch90:     backport-CVE-2022-4304-Fix-Timing-Oracle-in-RSA-decryption.patch
 Patch91:     backport-CVE-2022-4450-Avoid-dangling-ptrs-in-header-and-data-params-for-PE.patch
+Patch92:     backport-CVE-2023-0215-Check-CMS-failure-during-BIO-setup-with-stream-is-ha.patch
+Patch93:     backport-CVE-2023-0215-Fix-a-UAF-resulting-from-a-bug-in-BIO_new_NDEF.patch
+Patch94:     backport-CVE-2023-0286-Fix-GENERAL_NAME_cmp-for-x400Address-1.patch
 
 BuildRequires: gcc perl make lksctp-tools-devel coreutils util-linux zlib-devel
 
@@ -232,6 +235,9 @@ make test || :
 %ldconfig_scriptlets libs
 
 %changelog
+* Wed Mar 08 2023 fangxiuning <fangxiuning@huawei.com> - 1:1.1.1m-4
+- Fix some cves
+
 * Tue Mar 07 2023 fangxiuning <fangxiuning@huawei.com> - 1:1.1.1m-3
 - Fix some cves
 
