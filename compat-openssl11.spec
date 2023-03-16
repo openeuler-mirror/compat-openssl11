@@ -1,7 +1,7 @@
 %define soversion 1.1
 Name:        compat-openssl11
 Version:     1.1.1m
-Release:     4
+Release:     5
 Epoch:       1
 Summary:     Cryptography and SSL/TLS Toolkit
 License:     OpenSSL and SSLeay
@@ -159,10 +159,6 @@ RPM_OPT_FLAGS="$RPM_OPT_FLAGS -Wa,--noexecstack -DPURIFY $RPM_LD_FLAGS"
     %{?__debug_package:%{__debug_install_post}} \
     %{__arch_install_post} \
     %{__os_install_post} \
-    crypto/fips/fips_standalone_hmac $RPM_BUILD_ROOT%{_libdir}/libcrypto.so.%{version} >$RPM_BUILD_ROOT%{_libdir}/.libcrypto.so.%{version}.hmac \
-    ln -sf .libcrypto.so.%{version}.hmac $RPM_BUILD_ROOT%{_libdir}/.libcrypto.so.%{soversion}.hmac \
-    crypto/fips/fips_standalone_hmac $RPM_BUILD_ROOT%{_libdir}/libssl.so.%{version} >$RPM_BUILD_ROOT%{_libdir}/.libssl.so.%{version}.hmac \
-    ln -sf .libssl.so.%{version}.hmac $RPM_BUILD_ROOT%{_libdir}/.libssl.so.%{soversion}.hmac \
 %{nil}
 
 %install
@@ -197,10 +193,6 @@ rm -rf $RPM_BUILD_ROOT/%{_bindir}
 %check
 LD_LIBRARY_PATH=`pwd`${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}
 export LD_LIBRARY_PATH
-crypto/fips/fips_standalone_hmac libcrypto.so.%{soversion} >.libcrypto.so.%{soversion}.hmac
-ln -s .libcrypto.so.%{soversion}.hmac .libcrypto.so.hmac
-crypto/fips/fips_standalone_hmac libssl.so.%{soversion} >.libssl.so.%{soversion}.hmac
-ln -s .libssl.so.%{soversion}.hmac .libssl.so.hmac
 OPENSSL_ENABLE_MD5_VERIFY=
 export OPENSSL_ENABLE_MD5_VERIFY
 OPENSSL_SYSTEM_CIPHERS_OVERRIDE=xyz_nonexistent_file
@@ -220,8 +212,6 @@ make test || :
 %{_libdir}/libssl.so.%{version}
 %{_libdir}/libssl.so.%{soversion}
 %{_libdir}/engines-%{soversion}
-%attr(0644,root,root) %{_libdir}/.libcrypto.so.*.hmac
-%attr(0644,root,root) %{_libdir}/.libssl.so.*.hmac
 
 %files devel
 %defattr(-,root,root)
@@ -235,6 +225,9 @@ make test || :
 %ldconfig_scriptlets libs
 
 %changelog
+* Thu Mar 16 2023 wangcheng <wangcheng156@huawei.com> - 1:1.1.1m-5
+- Remove the .fips hamc file
+
 * Wed Mar 08 2023 fangxiuning <fangxiuning@huawei.com> - 1:1.1.1m-4
 - Fix some cves
 
