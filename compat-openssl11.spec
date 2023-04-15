@@ -1,7 +1,7 @@
 %define soversion 1.1
 Name:        compat-openssl11
 Version:     1.1.1m
-Release:     5
+Release:     6
 Epoch:       1
 Summary:     Cryptography and SSL/TLS Toolkit
 License:     OpenSSL and SSLeay
@@ -102,6 +102,12 @@ Patch91:     backport-CVE-2022-4450-Avoid-dangling-ptrs-in-header-and-data-param
 Patch92:     backport-CVE-2023-0215-Check-CMS-failure-during-BIO-setup-with-stream-is-ha.patch
 Patch93:     backport-CVE-2023-0215-Fix-a-UAF-resulting-from-a-bug-in-BIO_new_NDEF.patch
 Patch94:     backport-CVE-2023-0286-Fix-GENERAL_NAME_cmp-for-x400Address-1.patch
+Patch95:     backport-test-add-test-cases-for-the-policy-resource-overuse.patch
+Patch96:     backport-x509-excessive-resource-use-verifying-policy-constra.patch
+Patch97:     backport-Ensure-that-EXFLAG_INVALID_POLICY-is-checked-even-in.patch
+Patch98:     backport-Fix-documentation-of-X509_VERIFY_PARAM_add0_policy.patch
+Patch99:     backport-Add-a-Certificate-Policies-Test.patch
+Patch100:    backport-Generate-some-certificates-with-the-certificatePolic.patch
 
 BuildRequires: gcc perl make lksctp-tools-devel coreutils util-linux zlib-devel
 
@@ -225,6 +231,9 @@ make test || :
 %ldconfig_scriptlets libs
 
 %changelog
+* Sat Apr 15 2023 fangxiuning <fangxiuning@huawei.com> - 1:1.1.1m-6
+- Fix some cves
+
 * Thu Mar 16 2023 wangcheng <wangcheng156@huawei.com> - 1:1.1.1m-5
 - Remove the .fips hamc file
 
