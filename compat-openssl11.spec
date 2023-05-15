@@ -1,7 +1,7 @@
 %define soversion 1.1
 Name:        compat-openssl11
 Version:     1.1.1m
-Release:     5
+Release:     6
 Epoch:       1
 Summary:     Cryptography and SSL/TLS Toolkit
 License:     OpenSSL and SSLeay
@@ -33,7 +33,7 @@ Patch22:     Feature-X509-command-supports-SM2-certificate-signing-with-default-
 Patch23:     CVE-2022-2068-Fix-file-operations-in-c_rehash.patch
 Patch24:     CVE-2022-2097-Fix-AES-OCB-encrypt-decrypt-for-x86-AES-NI.patch
 Patch25:     Feature-add-ARMv8-implementations-of-SM4-in-ECB-and-XTS.patch
-Patch26:     Fix-reported-performance-degradation-on-aarch64.patch 
+Patch26:     Fix-reported-performance-degradation-on-aarch64.patch
 Patch27:     Feature-PKCS7-sign-and-verify-support-SM2-algorithm.patch
 Patch28:     Backport-SM3-acceleration-with-SM3-hardware-instruction-on-aa.patch
 Patch29:     Backport-SM4-optimization-for-ARM-by-HW-instruction.patch
@@ -77,18 +77,18 @@ Patch66:     backport-Fix-a-memory-leak-in-tls13_generate_secret.patch
 Patch67:     backport-Make-the-DRBG-seed-propagation-thread-safe.patch
 Patch68:     backport-Fix-memory-leak-in-X509V3_add1_i2d-when-flag-is-X509.patch
 Patch69:     fix-add-loongarch64-target.patch
-Patch70:     backport-APPS-x509-With-CA-but-both-CAserial-and-CAcreateseri.patch 
-Patch71:     backport-Fix-verify_callback-in-the-openssl-s_client-s_server.patch 
-Patch72:     backport-Fix-re-signing-certificates-with-different-key-sizes.patch 
-Patch73:     backport-Fix-ipv4_from_asc-behavior-on-invalid-Ip-addresses.patch 
-Patch74:     backport-Test-case-for-a2i_IPADDRESS.patch 
-Patch75:     backport-Fix-test-case-for-a2i_IPADDRESS.patch 
-Patch76:     backport-Fix-a-crash-in-v2i_IPAddrBlocks.patch 
-Patch77:     backport-Fixes-segfault-occurrence-in-PEM_write.patch 
-Patch78:     backport-X509_REQ_get_extensions-Return-empty-stack-if-no-ext.patch 
-Patch79:     backport-Fix-EC_KEY_set_private_key-priv_key-regression.patch 
-Patch80:     backport-Add-test-for-EC_KEY_set_private_key.patch 
-Patch81:     backport-Fix-SSL_pending-and-SSL_has_pending-with-DTLS.patch 
+Patch70:     backport-APPS-x509-With-CA-but-both-CAserial-and-CAcreateseri.patch
+Patch71:     backport-Fix-verify_callback-in-the-openssl-s_client-s_server.patch
+Patch72:     backport-Fix-re-signing-certificates-with-different-key-sizes.patch
+Patch73:     backport-Fix-ipv4_from_asc-behavior-on-invalid-Ip-addresses.patch
+Patch74:     backport-Test-case-for-a2i_IPADDRESS.patch
+Patch75:     backport-Fix-test-case-for-a2i_IPADDRESS.patch
+Patch76:     backport-Fix-a-crash-in-v2i_IPAddrBlocks.patch
+Patch77:     backport-Fixes-segfault-occurrence-in-PEM_write.patch
+Patch78:     backport-X509_REQ_get_extensions-Return-empty-stack-if-no-ext.patch
+Patch79:     backport-Fix-EC_KEY_set_private_key-priv_key-regression.patch
+Patch80:     backport-Add-test-for-EC_KEY_set_private_key.patch
+Patch81:     backport-Fix-SSL_pending-and-SSL_has_pending-with-DTLS.patch
 Patch82:     backport-Test-that-swapping-the-first-app-data-record-with-Fi.patch
 Patch83:     backport-Always-end-BN_mod_exp_mont_consttime-with-normal-Mon.patch
 Patch84:     backport-Add-an-extra-reduction-step-to-RSAZ-mod_exp-implemen.patch
@@ -102,6 +102,7 @@ Patch91:     backport-CVE-2022-4450-Avoid-dangling-ptrs-in-header-and-data-param
 Patch92:     backport-CVE-2023-0215-Check-CMS-failure-during-BIO-setup-with-stream-is-ha.patch
 Patch93:     backport-CVE-2023-0215-Fix-a-UAF-resulting-from-a-bug-in-BIO_new_NDEF.patch
 Patch94:     backport-CVE-2023-0286-Fix-GENERAL_NAME_cmp-for-x400Address-1.patch
+Patch95:     Fix-SM4-XTS-build-failure-using-clang.patch
 
 BuildRequires: gcc perl make lksctp-tools-devel coreutils util-linux zlib-devel
 
@@ -183,7 +184,7 @@ sed -i '/^\#ifndef OPENSSL_NO_SSL_TRACE/i\
 # Delete configuration files
 rm -rf  $RPM_BUILD_ROOT/%{_sysconfdir}/pki/tls/*
 
-# Delete man pages 
+# Delete man pages
 rm -rf $RPM_BUILD_ROOT/%{_mandir}/*
 rm -rf $RPM_BUILD_ROOT/%{_datadir}/doc
 
@@ -225,6 +226,9 @@ make test || :
 %ldconfig_scriptlets libs
 
 %changelog
+* Fri May 12 2023 Xu Yizhou <xuyizhou1@huawei.com> - 1:1.1.1m-6
+- Fix SM4-XTS build failure using clang
+
 * Thu Mar 16 2023 wangcheng <wangcheng156@huawei.com> - 1:1.1.1m-5
 - Remove the .fips hamc file
 
