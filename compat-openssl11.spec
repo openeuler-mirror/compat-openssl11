@@ -1,7 +1,7 @@
 %define soversion 1.1
 Name:        compat-openssl11
 Version:     1.1.1m
-Release:     6
+Release:     7
 Epoch:       1
 Summary:     Cryptography and SSL/TLS Toolkit
 License:     OpenSSL and SSLeay
@@ -103,6 +103,10 @@ Patch92:     backport-CVE-2023-0215-Check-CMS-failure-during-BIO-setup-with-stre
 Patch93:     backport-CVE-2023-0215-Fix-a-UAF-resulting-from-a-bug-in-BIO_new_NDEF.patch
 Patch94:     backport-CVE-2023-0286-Fix-GENERAL_NAME_cmp-for-x400Address-1.patch
 Patch95:     Fix-SM4-XTS-build-failure-using-clang.patch
+Patch96:     backport-test-add-test-cases-for-the-policy-resource-overuse.patch
+Patch97:     backport-x509-excessive-resource-use-verifying-policy-constra.patch
+Patch98:     backport-Ensure-that-EXFLAG_INVALID_POLICY-is-checked-even-in.patch
+Patch99:     backport-Fix-documentation-of-X509_VERIFY_PARAM_add0_policy.patch
 
 BuildRequires: gcc perl make lksctp-tools-devel coreutils util-linux zlib-devel
 
@@ -226,6 +230,9 @@ make test || :
 %ldconfig_scriptlets libs
 
 %changelog
+* Thu May 25 2023 fangxiuning <fangxiuning@huawei.com> - 1:1.1.1m-7
+- Fix some cves
+
 * Fri May 12 2023 Xu Yizhou <xuyizhou1@huawei.com> - 1:1.1.1m-6
 - Fix SM4-XTS build failure using clang
 
